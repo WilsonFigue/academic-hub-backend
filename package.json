@@ -1,0 +1,45 @@
+{
+  "name": "academic-hub-backend",
+  "version": "0.1.0",
+  "description": "API REST de Academic Hub (Fastify + PostgreSQL 18).",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/src/server.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:check": "tsx scripts/db-check.ts",
+    "db:migrate": "tsx scripts/db-migrate.ts",
+    "db:status": "tsx scripts/db-status.ts",
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
+    "db:create": "tsx scripts/db-create.ts",
+    "db:verify": "tsx scripts/db-verify-schema.ts",
+    "db:rename": "tsx scripts/db-rename.ts",
+    "dev:import": "tsx scripts/dev-import.ts",
+    "demo:seed": "tsx scripts/demo-seed.ts",
+    "ui:review": "tsx scripts/ui-review.ts",
+    "db:validate": "tsx scripts/validate-data.ts",
+    "ui:breakpoints": "tsx scripts/ui-breakpoints.ts"
+  },
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/swagger": "^9.9.2",
+    "@node-rs/argon2": "^2.2.2",
+    "blackboard-mcp": "0.1.2",
+    "fastify": "^5.12.7",
+    "pg": "^8.23.1",
+    "playwright": "1.58.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.6"
+  }
+}

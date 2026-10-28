@@ -1,0 +1,41 @@
+import { ConfigError, readConfig } from './config/env.js';
+import { createDatabase } from './database/connection.js';
+import { buildApp } from './app.js';
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+
+async function main(): Promise<void> {
+  const config = readConfig();
+  const db = config.databaseUrl ? createDatabase(config, config.databaseUrl) : null;
+
+  // Las rutas internas de importación solo existen en desarrollo, con token de operador y escuchando en loopback.
+  const internalEnabled = config.nodeEnv === 'development' && Boolean(config.devOperatorToken) && Boolean(db) && LOOPBACK_HOSTS.has(config.host);
+  const app = await buildApp({
+    config,
+    db,
+    registerInternal: internalEnabled
+      ? async (instance) => {
+          const { devImportRoutes } = await import('./modules/import/dev-import.routes.js');
+          await instance.register(devImportRoutes, { db: db!, operatorToken: config.devOperatorToken! });
+        }
+      : undefined,
+  });
+  if (!db) app.log.warn('Sin base de datos configurada: /api/v1 responderá 503.');
+  if (internalEnabled) app.log.warn('Rutas /internal/dev habilitadas (solo loopback, requieren DEV_OPERATOR_TOKEN).');
+
+  const shutdown = async (signal: string) => {
+    app.log.info({ signal }, 'Cerrando servidor');
+    await app.close();
+    await db?.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  await app.listen({ port: config.port, host: config.host });
+}
+
+main().catch((error: unknown) => {
+  console.error(error instanceof ConfigError ? error.message : 'No fue posible iniciar el servidor.');
+  process.exit(1);
+});
