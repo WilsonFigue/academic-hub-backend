@@ -8,6 +8,7 @@
 //  4. Salvaguardas: tope de guías por corrida y tope de gasto mensual.
 import type { Database, Queryable } from '../../database/connection.js';
 import { HttpError, notFound } from '../../shared/errors.js';
+import { detectTools } from './tools.js';
 
 export interface GuideContent {
   summary: string;
@@ -48,9 +49,12 @@ const OWN = `ea.user_id = $1 AND ea.link_status <> 'revoked' AND ce.status = 'ac
 export interface GuideView {
   id: string; status: 'requested' | 'generating' | 'ready' | 'failed'; trigger: 'manual' | 'routine';
   content: GuideContent | null; model: string | null; errorCode: string | null; requestedAt: string; finishedAt: string | null;
+  /** Herramientas que la actividad pide usar (p. ej. 'geogebra'), detectadas en el texto de la guía. */
+  tools: string[];
 }
 
 const toView = (row: Record<string, unknown>): GuideView => ({
+  tools: row.content ? detectTools(JSON.stringify(row.content)) : [],
   id: row.id as string, status: row.status as GuideView['status'], trigger: row.trigger as GuideView['trigger'],
   content: (row.content as GuideContent | null) ?? null, model: (row.model as string | null) ?? null, errorCode: (row.error_code as string | null) ?? null,
   requestedAt: new Date(row.requested_at as string).toISOString(), finishedAt: row.finished_at ? new Date(row.finished_at as string).toISOString() : null,

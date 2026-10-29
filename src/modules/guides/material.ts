@@ -34,7 +34,7 @@ const weekOf = (value: string | null) => /semana\s+(\d+)/.exec(normalize(value ?
 const overlap = (a: Set<string>, b: Set<string>) => { let n = 0; for (const word of a) if (b.has(word)) n += 1; return n; };
 
 /** Texto de un archivo: se lee de la copia local (si falta, se descarga con la sesión del estudiante). */
-async function fileText(store: FileStore, ref: { id: string; accountId: string; file: { fileName: string; mimeType: string; fileSize: number; permanentUrl?: string } }): Promise<{ text: string } | { skip: string }> {
+export async function fileText(store: FileStore, ref: { id: string; accountId: string; file: { fileName: string; mimeType: string; fileSize: number; permanentUrl?: string } }): Promise<{ text: string } | { skip: string }> {
   if (!isPreviewable(ref.file.mimeType, ref.file.fileName)) return { skip: 'tipo de archivo sin texto' };
   if (ref.file.fileSize > 25 * 1024 * 1024) return { skip: 'archivo demasiado grande' };
   let path: string;
