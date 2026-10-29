@@ -9,7 +9,7 @@ import { createBlackboardGateway, SessionExpiredError } from '../blackboard/gate
 import { LoginError, loginInteractively } from '../blackboard/session-login.js';
 import { loadCredentials, markCredentialUse, saveCredentials } from '../credentials/vault.js';
 import { applyCalendar, importCalendar } from '../calendar/calendar.service.js';
-import { enqueueRoutine, notConfiguredGenerator, processQueue, type GuideGenerator } from '../guides/guides.js';
+import { enqueueRoutine, notConfiguredGenerator, processQueue, type GuideGenerator, type GuidePolicy } from '../guides/guides.js';
 import { dispatchReviewMarks } from '../files/reviews.js';
 import { ImportError, UTEC, importStudent, type ImportMode, type ImportSummary } from './import.service.js';
 
@@ -50,9 +50,10 @@ export interface DevImportOptions {
   scheduledLoginVisible?: boolean;
   /** Generador de guías de estudio; sin él la rutina solo encola. */
   guideGenerator?: GuideGenerator;
+  guidePolicy?: GuidePolicy;
 }
 
-export async function devImportRoutes(app: FastifyInstance, { db, operatorToken, passingGradePct = null, credentialsKey = null, scheduledLoginVisible = false, guideGenerator = notConfiguredGenerator }: DevImportOptions): Promise<void> {
+export async function devImportRoutes(app: FastifyInstance, { db, operatorToken, passingGradePct = null, credentialsKey = null, scheduledLoginVisible = false, guideGenerator = notConfiguredGenerator, guidePolicy }: DevImportOptions): Promise<void> {
   const operations = new Map<string, Operation>();
   const tokenHash = sha256(operatorToken);
   let running: string | null = null;
@@ -139,7 +140,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
           mode, passingGradePct, onIdentity: async (accountId) => { await dispatchReviewMarks(db, accountId, (course, content, reviewed) => session.markReviewed(course, content, reviewed)); },
         });
         await applyCalendar(db, { userId: summary.user.id }).catch(() => {});
-        await enqueueRoutine(db, undefined, { userId: summary.user.id }).catch(() => {});
+        await enqueueRoutine(db, guidePolicy, { userId: summary.user.id }).catch(() => {});
         const { temporaryPassword, ...rest } = summary;
         if (toRemember && credentialsKey) {
           const account = await db.query<{ id: string }>(`SELECT id FROM external_accounts WHERE user_id = $1 AND link_status <> 'revoked' ORDER BY created_at LIMIT 1`, [summary.user.id]);
@@ -188,7 +189,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
         });
         changes = summary.sync.changesRecorded;
         await applyCalendar(db, { userId: summary.user.id }).catch(() => {});
-        await enqueueRoutine(db, undefined, { userId: summary.user.id }).catch(() => {});
+        await enqueueRoutine(db, guidePolicy, { userId: summary.user.id }).catch(() => {});
       } catch (error) {
         errorCode = error instanceof ImportError || error instanceof LoginError ? error.code : error instanceof SessionExpiredError ? 'blackboard_session_expired' : 'import_failed';
         if (!(error instanceof ImportError || error instanceof LoginError || error instanceof SessionExpiredError)) app.log.error({ err: { name: (error as Error)?.name } }, 'scheduled refresh failed');
@@ -258,8 +259,8 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
   // Rutina de guías de estudio: encola las actividades pendientes de las materias activadas y procesa la cola si hay IA conectada.
   app.post('/internal/dev/utec/study-guides/run', { logLevel: 'warn', schema: { hide: true } }, async (request) => {
     authorizeOperator(request);
-    const routine = await enqueueRoutine(db);
-    const queue = await processQueue(db, guideGenerator);
+    const routine = await enqueueRoutine(db, guidePolicy);
+    const queue = await processQueue(db, guideGenerator, guidePolicy);
     return { routine, queue };
   });
 

@@ -29,6 +29,16 @@ export interface AppConfig {
   credentialsKey: Buffer | null;
   /** Si es true, la actualización con credenciales recordadas abre Chromium visible (por si el sitio rechaza el modo sin ventana). */
   scheduledLoginVisible: boolean;
+  /** Clave de la API de OpenAI para las guías de estudio; sin ella las solicitudes quedan en cola y nada sale del equipo. */
+  openaiApiKey: string | null;
+  openaiModel: string;
+  /** Precios en USD por millón de tokens (para calcular el costo de cada guía y respetar el tope mensual). */
+  openaiPriceInPerM: number;
+  openaiPriceOutPerM: number;
+  studyGuideMonthlyCapUsd: number;
+  studyGuideMaxPerRun: number;
+  /** Tope de caracteres de material que se envía por guía (~3.5 caracteres por token). */
+  studyGuideMaxInputChars: number;
 }
 
 export class ConfigError extends Error {
@@ -122,6 +132,14 @@ function databaseUrlFromParts(dbName: string | undefined, problems: string[], la
   return `postgresql://${encodeURIComponent(user!)}:${encodeURIComponent(password)}@${hostPart}:${port}/${encodeURIComponent(name!)}`;
 }
 
+function decimal(name: string, fallback: number, min: number, max: number, problems: string[]): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < min || value > max) { problems.push(`${name} debe ser un número entre ${min} y ${max}.`); return fallback; }
+  return value;
+}
+
 function credentialsKey(problems: string[]): Buffer | null {
   const raw = (process.env.CREDENTIALS_KEY ?? '').trim();
   if (!raw) return null;
@@ -190,6 +208,13 @@ export function readConfig(): AppConfig {
     passingGradePct: passingPct(problems),
     credentialsKey: credentialsKey(problems),
     scheduledLoginVisible: bool('SCHEDULED_LOGIN_VISIBLE', false, problems),
+    openaiApiKey: (process.env.OPENAI_API_KEY ?? '').trim() || null,
+    openaiModel: (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
+    openaiPriceInPerM: decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems),
+    openaiPriceOutPerM: decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems),
+    studyGuideMonthlyCapUsd: decimal('STUDY_GUIDE_MONTHLY_CAP_USD', 5, 0, 1000, problems),
+    studyGuideMaxPerRun: int('STUDY_GUIDE_MAX_PER_RUN', 5, 1, 100, problems),
+    studyGuideMaxInputChars: int('STUDY_GUIDE_MAX_INPUT_CHARS', 120_000, 5_000, 600_000, problems),
   };
   if (config.devOperatorToken && config.devOperatorToken.length < 32) problems.push('DEV_OPERATOR_TOKEN debe tener al menos 32 caracteres.');
   if (config.devOperatorToken && nodeEnv === 'production') problems.push('DEV_OPERATOR_TOKEN no puede definirse en producción.');

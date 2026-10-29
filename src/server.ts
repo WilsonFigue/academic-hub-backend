@@ -13,15 +13,26 @@ async function main(): Promise<void> {
   const sessions = internalEnabled && config.credentialsKey
     ? new (await import('./modules/files/sessions.js')).BlackboardSessions({ db: db!, key: config.credentialsKey, baseUrl: 'https://utecvirtual.blackboard.com', visible: config.scheduledLoginVisible })
     : null;
+  // Guías de estudio: con la clave de OpenAI se generan de verdad; sin ella las solicitudes quedan en cola.
+  const { createFileStore } = await import('./modules/files/store.js');
+  const { createOpenAIGenerator } = await import('./modules/guides/openai.js');
+  const { DEFAULT_POLICY } = await import('./modules/guides/guides.js');
+  const guidePolicy = { ...DEFAULT_POLICY, monthlyCapUsd: config.studyGuideMonthlyCapUsd, maxPerRun: config.studyGuideMaxPerRun };
+  const guideGenerator = config.openaiApiKey && db
+    ? createOpenAIGenerator({ apiKey: config.openaiApiKey, model: config.openaiModel, priceInPerM: config.openaiPriceInPerM, priceOutPerM: config.openaiPriceOutPerM,
+        maxInputChars: config.studyGuideMaxInputChars, db, store: createFileStore(sessions) })
+    : undefined;
   const app = await buildApp({
     config,
     db,
     blackboardSessions: sessions,
+    guideGenerator,
+    guidePolicy,
     registerInternal: internalEnabled
       ? async (instance) => {
           const { devImportRoutes } = await import('./modules/import/dev-import.routes.js');
           await instance.register(devImportRoutes, { db: db!, operatorToken: config.devOperatorToken!, passingGradePct: config.passingGradePct,
-            credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible });
+            credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible, guideGenerator, guidePolicy });
         }
       : undefined,
   });
