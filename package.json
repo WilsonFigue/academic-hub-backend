@@ -32,8 +32,10 @@
     "@node-rs/argon2": "^2.2.2",
     "blackboard-mcp": "0.1.2",
     "fastify": "^5.12.7",
+    "fflate": "^0.8.3",
     "pg": "^8.23.1",
-    "playwright": "1.58.0"
+    "playwright": "1.58.0",
+    "unpdf": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

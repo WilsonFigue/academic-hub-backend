@@ -258,7 +258,7 @@ export async function academicRoutes(app: FastifyInstance, { db, repo, authRepo 
   app.get<{ Params: { id: string } }>('/activities/:id', { preHandler: auth, schema: { tags: ['activities'], params: uuidParam } }, async (request) => {
     const [activity] = await repo.activities(userId(request), { activityId: request.params.id, includeCalculated: true });
     if (!activity) throw notFound();
-    return { activity, attempts: await repo.attempts(userId(request), request.params.id) };
+    return { activity, attempts: await repo.attempts(userId(request), request.params.id), guides: await repo.activityGuides(userId(request), request.params.id) };
   });
 
   app.get<{ Querystring: { from?: string; to?: string } }>('/calendar', {

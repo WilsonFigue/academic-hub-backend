@@ -45,6 +45,8 @@ export interface ImportOptions {
   passingGradePct?: number | null;
   /** Origen registrado en sync_runs (por defecto, según el modo). */
   trigger?: 'scheduled';
+  /** Se llama una vez verificada la identidad y antes de leer datos (p. ej. para enviar las marcas de revisión pendientes). Un fallo aquí no detiene la importación. */
+  onIdentity?: (accountId: string) => Promise<void>;
 }
 const TRIGGERS: Record<ImportMode, string> = { onboarding: 'dev_import', full: 'dev_refresh_full', daily: 'dev_refresh_daily' };
 const GRACE_MS = 3 * DAY_MS;
@@ -182,6 +184,8 @@ export async function importStudent(
 
   const institutionId = await ensureInstitution(db);
   const identity = await linkIdentity(db, institutionId, profile, locale, mode === 'onboarding');
+
+  if (options.onIdentity) await options.onIdentity(identity.accountId).catch(() => {});
 
   // Línea base: sin una importación previa terminada, nada de lo encontrado es "novedad".
   const previous = await db.query<{ has_previous: boolean; term_ids: string[] | null }>(

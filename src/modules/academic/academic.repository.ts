@@ -76,16 +76,40 @@ export function createAcademicRepository(db: Database) {
     },
 
     /** Árbol visible para la inscripción del usuario (nunca lo observado por otra cuenta). */
+    /** Archivos que comparten carpeta con el contenido de una actividad (sus guías), solo los visibles para esa inscripción. */
+    async activityGuides(userId: string, activityId: string) {
+      const { rows } = await db.query(
+        `WITH own AS (${OWN_ENROLLMENTS})
+         SELECT f.id, f.course_id AS "courseId", f.title, f.content_detail->'file'->>'fileName' AS "fileName",
+                f.content_detail->'file'->>'mimeType' AS "mimeType", (f.content_detail->'file'->>'fileSize')::bigint AS size
+           FROM own
+           JOIN student_grades sg ON sg.enrollment_id = own.enrollment_id AND sg.id = $2
+           JOIN gradebook_columns gc ON gc.id = sg.gradebook_column_id
+           JOIN course_content_items task ON task.id = gc.content_item_id
+           JOIN course_content_items f ON f.course_id = task.course_id AND f.parent_external_id IS NOT DISTINCT FROM task.parent_external_id
+                AND f.handler = 'resource/x-bb-file' AND f.id <> task.id AND f.removed_at_source IS NULL
+           JOIN enrollment_content_visibility v ON v.enrollment_id = own.enrollment_id AND v.content_item_id = f.id AND v.missing_since IS NULL
+          WHERE task.parent_external_id IS NOT NULL AND f.content_detail->'file' IS NOT NULL
+          ORDER BY f.position NULLS LAST, f.title`,
+        [userId, activityId],
+      );
+      return rows;
+    },
+
     async courseContent(userId: string, courseId: string) {
       const { rows } = await db.query(
         `WITH own AS (${OWN_ENROLLMENTS} AND ce.course_id = $2)
          SELECT ci.id, ci.parent_id AS "parentId", ci.root_kind AS "rootKind", ci.handler, ci.title, ci.description,
                 ci.body_text AS "bodyText", ci.position, ci.depth, ci.external_url AS "externalUrl",
                 ci.has_grade_column AS "hasGradeColumn", ci.due_at AS "dueAt", ci.source_modified_at AS "modifiedAt",
-                v.visibility, v.completion
+                v.visibility, v.completion,
+                CASE WHEN ci.content_detail->'file' IS NOT NULL THEN jsonb_build_object('name', ci.content_detail->'file'->>'fileName',
+                  'mimeType', ci.content_detail->'file'->>'mimeType', 'size', (ci.content_detail->'file'->>'fileSize')::bigint) END AS file,
+                CASE WHEN m.enrollment_id IS NOT NULL THEN jsonb_build_object('state', m.state, 'markedAt', m.marked_at, 'sentAt', m.sent_at, 'alreadyCompleted', m.already_completed) END AS review
            FROM own
            JOIN enrollment_content_visibility v ON v.enrollment_id = own.enrollment_id AND v.missing_since IS NULL
            JOIN course_content_items ci ON ci.id = v.content_item_id AND ci.removed_at_source IS NULL
+           LEFT JOIN content_review_marks m ON m.enrollment_id = own.enrollment_id AND m.content_item_id = ci.id
           ORDER BY ci.depth, ci.position NULLS LAST, ci.title`,
         [userId, courseId],
       );

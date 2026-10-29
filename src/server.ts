@@ -10,9 +10,13 @@ async function main(): Promise<void> {
 
   // Las rutas internas de importación solo existen en desarrollo, con token de operador y escuchando en loopback.
   const internalEnabled = config.nodeEnv === 'development' && Boolean(config.devOperatorToken) && Boolean(db) && LOOPBACK_HOSTS.has(config.host);
+  const sessions = internalEnabled && config.credentialsKey
+    ? new (await import('./modules/files/sessions.js')).BlackboardSessions({ db: db!, key: config.credentialsKey, baseUrl: 'https://utecvirtual.blackboard.com', visible: config.scheduledLoginVisible })
+    : null;
   const app = await buildApp({
     config,
     db,
+    blackboardSessions: sessions,
     registerInternal: internalEnabled
       ? async (instance) => {
           const { devImportRoutes } = await import('./modules/import/dev-import.routes.js');

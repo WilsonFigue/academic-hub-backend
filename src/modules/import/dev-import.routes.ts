@@ -8,6 +8,7 @@ import { HttpError, notFound } from '../../shared/errors.js';
 import { createBlackboardGateway, SessionExpiredError } from '../blackboard/gateway.js';
 import { LoginError, loginInteractively } from '../blackboard/session-login.js';
 import { loadCredentials, markCredentialUse, saveCredentials } from '../credentials/vault.js';
+import { dispatchReviewMarks } from '../files/reviews.js';
 import { ImportError, UTEC, importStudent, type ImportMode, type ImportSummary } from './import.service.js';
 
 // Tres operaciones con la misma sesión interactiva (usuario + contraseña + MFA manual, solo en memoria):
@@ -129,7 +130,10 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
       try {
         captured = await loginInteractively(UTEC.lmsBaseUrl, credentials!, setPhase);
         credentials = null;
-        const summary = await importStudent(db, createBlackboardGateway(captured.transport), setPhase, { mode, passingGradePct });
+        const session = captured;
+        const summary = await importStudent(db, createBlackboardGateway(captured.transport), setPhase, {
+          mode, passingGradePct, onIdentity: async (accountId) => { await dispatchReviewMarks(db, accountId, (course, content, reviewed) => session.markReviewed(course, content, reviewed)); },
+        });
         const { temporaryPassword, ...rest } = summary;
         if (toRemember && credentialsKey) {
           const account = await db.query<{ id: string }>(`SELECT id FROM external_accounts WHERE user_id = $1 AND link_status <> 'revoked' ORDER BY created_at LIMIT 1`, [summary.user.id]);
@@ -171,7 +175,11 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
         onPhase('authenticating');
         captured = await loginInteractively(UTEC.lmsBaseUrl, credentials, () => {}, { headless: !scheduledLoginVisible, timeoutMs: 120_000, failOnMfa: true });
         onPhase('extracting');
-        const summary = await importStudent(db, createBlackboardGateway(captured.transport), onPhase, { mode: 'daily', trigger: 'scheduled', passingGradePct });
+        const session = captured;
+        const summary = await importStudent(db, createBlackboardGateway(captured.transport), onPhase, {
+          mode: 'daily', trigger: 'scheduled', passingGradePct,
+          onIdentity: async (accountId) => { await dispatchReviewMarks(db, accountId, (course, content, reviewed) => session.markReviewed(course, content, reviewed)); },
+        });
         changes = summary.sync.changesRecorded;
       } catch (error) {
         errorCode = error instanceof ImportError || error instanceof LoginError ? error.code : error instanceof SessionExpiredError ? 'blackboard_session_expired' : 'import_failed';

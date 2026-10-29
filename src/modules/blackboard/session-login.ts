@@ -41,8 +41,22 @@ export interface LoginOptions {
   failOnMfa?: boolean;
 }
 
+export interface DownloadedResponse {
+  status: number;
+  contentType: string;
+  contentLength: number | null;
+  body: ReadableStream<Uint8Array> | null;
+}
+
 export interface CapturedSession {
   transport: BlackboardTransport;
+  /** Descarga de solo lectura (GET) de un archivo propio de Blackboard; sigue las redirecciones hasta los bytes. */
+  download(path: string): Promise<DownloadedResponse>;
+  /**
+   * ÚNICA escritura permitida hacia Blackboard: el botón "Marcar como revisado" de un contenido, pedido explícitamente por el estudiante.
+   * Solo construye PATCH /learn/api/v1/courses/{curso}/contents/{contenido}/states/me con identificadores validados; no expone escrituras genéricas.
+   */
+  markReviewed(courseExternalId: string, contentExternalId: string, reviewed: boolean): Promise<{ status: number }>;
   /** Descarta cookies y referencias; debe llamarse al terminar. */
   dispose(): void;
 }
@@ -145,8 +159,34 @@ export async function loginInteractively(
         }
       },
     };
+    const ID = /^_\d{1,12}_\d{1,4}$/;
     return {
       transport,
+      async download(path) {
+        if (disposed || !http) throw new Error('Sesión descartada.');
+        // Solo rutas de archivos de la propia instancia.
+        if (!path.startsWith('/bbcswebdav/')) throw new Error('Ruta de archivo no permitida.');
+        const response = await http.request({ path, timeoutMs: 120_000, retries: 1, allowRefresh: false, allowNotFound: true });
+        return {
+          status: response.status, contentType: (response.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim(),
+          contentLength: Number(response.headers.get('content-length') ?? '') || null, body: response.body.body,
+        };
+      },
+      async markReviewed(courseExternalId, contentExternalId, reviewed) {
+        if (disposed || !http) throw new Error('Sesión descartada.');
+        if (!ID.test(courseExternalId) || !ID.test(contentExternalId)) throw new Error('Identificador de Blackboard no válido.');
+        try {
+          const response = await http.request({
+            method: 'PATCH', path: `/learn/api/v1/courses/${courseExternalId}/contents/${contentExternalId}/states/me`, body: { reviewed },
+            headers: { 'Content-Type': 'application/json;charset=UTF-8' }, retries: 0, allowRefresh: false, allowNotFound: true, forceAllowWrite: true,
+          });
+          await response.body.body?.cancel().catch(() => {});
+          return { status: response.status };
+        } catch (error) {
+          if (error instanceof sdk.BlackboardError) return { status: error.status ?? 0 };
+          return { status: 0 };
+        }
+      },
       dispose() {
         disposed = true;
         void session.jar.removeAllCookies().catch(() => {});
