@@ -16,7 +16,7 @@ export class LoginError extends Error {
 
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
 
-function resolveChromiumExecutable(chromium: { executablePath(): string }): string | undefined {
+export function resolveChromiumExecutable(chromium: { executablePath(): string }): string | undefined {
   if (existsSync(chromium.executablePath())) return undefined;
   const localAppData = process.env.LOCALAPPDATA;
   const root = localAppData ? join(localAppData, 'ms-playwright') : '';

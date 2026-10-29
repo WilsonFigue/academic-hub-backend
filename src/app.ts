@@ -105,7 +105,7 @@ export async function buildApp({ config, db, logger = true, registerInternal, bl
     await api.register(authRoutes, { config, service: authService, repo: authRepo });
     await api.register(academicRoutes, { db, repo: createAcademicRepository(db), authRepo });
     await api.register(filesRoutes, { db, sessions: blackboardSessions });
-    await api.register(guidesRoutes, { db, generator: guideGenerator, policy: guidePolicy });
+    await api.register(guidesRoutes, { db, generator: guideGenerator, policy: guidePolicy, webOrigin: config.frontendOrigin });
   }, { prefix: '/api/v1' });
 
   if (registerInternal) await registerInternal(app);

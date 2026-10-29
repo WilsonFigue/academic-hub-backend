@@ -216,3 +216,28 @@ export async function processQueue(db: Database, generator: GuideGenerator, poli
   }
   return summary;
 }
+
+export interface GuidePdfSource {
+  guideId: string; title: string; course: string; dueAt: string | null; points: number | null;
+  content: GuideContent; tools: string[]; generatedAt: string | null;
+}
+
+/** Todo lo necesario para el PDF de la guía de una actividad; 404 si no existe o aún no está lista. */
+export async function getGuidePdfSource(db: Queryable, userId: string, activityId: string): Promise<GuidePdfSource> {
+  const { rows } = await db.query<{ id: string; name: string; course: string; due: Date | null; points: string | null; content: GuideContent; finished_at: Date | null }>(
+    `SELECT g.id, gc.name, c.name AS course, COALESCE(sg.effective_due_at, gc.due_at) AS due, gc.points_possible AS points, g.content, g.finished_at
+       FROM student_grades sg
+       JOIN course_enrollments ce ON ce.id = sg.enrollment_id
+       JOIN external_accounts ea ON ea.id = ce.external_account_id
+       JOIN gradebook_columns gc ON gc.id = sg.gradebook_column_id
+       JOIN courses c ON c.id = sg.course_id
+       JOIN study_guides g ON g.enrollment_id = sg.enrollment_id AND g.gradebook_column_id = sg.gradebook_column_id AND g.status = 'ready'
+      WHERE sg.id = $2 AND ${OWN} AND ${IS_ACTIVITY}`, [userId, activityId]);
+  const row = rows[0];
+  if (!row) throw notFound();
+  return {
+    guideId: row.id, title: row.name, course: row.course, dueAt: row.due ? new Date(row.due).toISOString() : null,
+    points: row.points === null ? null : Number(row.points), content: row.content, tools: detectTools(JSON.stringify(row.content)),
+    generatedAt: row.finished_at ? new Date(row.finished_at).toISOString() : null,
+  };
+}
