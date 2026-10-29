@@ -10,6 +10,8 @@ import { assertAllowedOrigin, createSessionLoader } from './modules/auth/auth.gu
 import { createAuthRepository } from './modules/auth/auth.repository.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { createAuthService } from './modules/auth/auth.service.js';
+import { guidesRoutes } from './modules/guides/guides.routes.js';
+import { notConfiguredGenerator, type GuideGenerator } from './modules/guides/guides.js';
 import { filesRoutes } from './modules/files/files.routes.js';
 import type { BlackboardSessions } from './modules/files/sessions.js';
 import { healthRoutes } from './modules/health/health.routes.js';
@@ -23,9 +25,11 @@ export interface BuildAppOptions {
   registerInternal?: (app: FastifyInstance) => Promise<void>;
   /** Sesiones de Blackboard para abrir archivos por primera vez (solo desarrollo, con credenciales recordadas). Sin ellas solo se sirven archivos ya guardados. */
   blackboardSessions?: BlackboardSessions | null;
+  /** Generador de guías de estudio (IA). Sin él, las solicitudes quedan en cola. */
+  guideGenerator?: GuideGenerator;
 }
 
-export async function buildApp({ config, db, logger = true, registerInternal, blackboardSessions = null }: BuildAppOptions): Promise<FastifyInstance> {
+export async function buildApp({ config, db, logger = true, registerInternal, blackboardSessions = null, guideGenerator = notConfiguredGenerator }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger
       ? {
@@ -99,6 +103,7 @@ export async function buildApp({ config, db, logger = true, registerInternal, bl
     await api.register(authRoutes, { config, service: authService, repo: authRepo });
     await api.register(academicRoutes, { db, repo: createAcademicRepository(db), authRepo });
     await api.register(filesRoutes, { db, sessions: blackboardSessions });
+    await api.register(guidesRoutes, { db, generator: guideGenerator });
   }, { prefix: '/api/v1' });
 
   if (registerInternal) await registerInternal(app);
