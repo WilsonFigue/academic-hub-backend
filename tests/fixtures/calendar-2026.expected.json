@@ -1,0 +1,26 @@
+{
+  "institution": "UTEC",
+  "source": "Instructivo académico 2026",
+  "terms": [
+    {
+      "name": "Ciclo 01-2026", "classesStart": "2026-01-22", "classesEnd": "2026-06-02", "withdrawalDeadline": "2026-04-15",
+      "evaluations": [
+        { "number": 1, "examStart": "2026-02-16", "examEnd": "2026-02-22", "deferredRequestDeadline": "2026-03-02", "deferredStart": "2026-03-03", "deferredEnd": "2026-03-09", "gradesCorrectionDeadline": "2026-03-21" },
+        { "number": 2, "examStart": "2026-03-16", "examEnd": "2026-03-22", "deferredRequestDeadline": "2026-04-07", "deferredStart": "2026-04-08", "deferredEnd": "2026-04-14", "gradesCorrectionDeadline": "2026-04-25" },
+        { "number": 3, "examStart": "2026-04-17", "examEnd": "2026-04-23", "deferredRequestDeadline": "2026-05-02", "deferredStart": "2026-05-03", "deferredEnd": "2026-05-09", "gradesCorrectionDeadline": "2026-05-23" },
+        { "number": 4, "examStart": "2026-05-16", "examEnd": "2026-05-22", "deferredRequestDeadline": "2026-05-23", "deferredStart": "2026-05-25", "deferredEnd": "2026-05-31", "gradesCorrectionDeadline": "2026-06-20" },
+        { "number": 5, "examStart": "2026-06-03", "examEnd": "2026-06-09", "deferredRequestDeadline": "2026-06-12", "deferredStart": "2026-06-13", "deferredEnd": "2026-06-13", "gradesCorrectionDeadline": "2026-06-27" }
+      ]
+    },
+    {
+      "name": "Ciclo 02-2026", "classesStart": "2026-07-24", "classesEnd": "2026-12-03", "withdrawalDeadline": "2026-10-15",
+      "evaluations": [
+        { "number": 1, "examStart": "2026-08-17", "examEnd": "2026-08-23", "deferredRequestDeadline": "2026-09-01", "deferredStart": "2026-09-02", "deferredEnd": "2026-09-08", "gradesCorrectionDeadline": "2026-09-19" },
+        { "number": 2, "examStart": "2026-09-17", "examEnd": "2026-09-23", "deferredRequestDeadline": "2026-10-01", "deferredStart": "2026-10-02", "deferredEnd": "2026-10-08", "gradesCorrectionDeadline": "2026-10-24" },
+        { "number": 3, "examStart": "2026-10-17", "examEnd": "2026-10-23", "deferredRequestDeadline": "2026-10-31", "deferredStart": "2026-11-03", "deferredEnd": "2026-11-09", "gradesCorrectionDeadline": "2026-11-21" },
+        { "number": 4, "examStart": "2026-11-16", "examEnd": "2026-11-22", "deferredRequestDeadline": "2026-11-24", "deferredStart": "2026-11-25", "deferredEnd": "2026-12-01", "gradesCorrectionDeadline": "2026-12-12" },
+        { "number": 5, "examStart": "2026-12-04", "examEnd": "2026-12-10", "deferredRequestDeadline": "2026-12-12", "deferredStart": "2026-12-13", "deferredEnd": "2026-12-13", "gradesCorrectionDeadline": "2027-01-05" }
+      ]
+    }
+  ]
+}

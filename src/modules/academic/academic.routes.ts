@@ -175,6 +175,8 @@ export async function academicRoutes(app: FastifyInstance, { db, repo, authRepo 
     return { changes, nextCursor: changes.length === limit && last ? `${new Date(last.detectedAt).toISOString()}|${last.id}` : null };
   });
 
+  app.get('/evaluation-overview', { preHandler: auth, schema: { tags: ['evaluation-cycles'] } }, async (request) => ({ terms: await repo.evaluationOverview(userId(request)) }));
+
   app.get<{ Params: { id: string } }>('/courses/:id/evaluation-cycles', { preHandler: auth, schema: { tags: ['evaluation-cycles'], params: uuidParam } }, async (request) => {
     const enrollmentId = await repo.ownEnrollment(userId(request), request.params.id);
     if (!enrollmentId) throw notFound();

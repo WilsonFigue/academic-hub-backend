@@ -268,8 +268,16 @@ export function createAcademicRepository(db: Database) {
 
     async evaluationCycles(enrollmentId: string) {
       const cycles = await db.query(
-        `SELECT id, number, label, weight_percent AS "weightPercent", is_active AS "isActive", source, confirmed_at AS "confirmedAt"
-           FROM evaluation_cycles WHERE enrollment_id = $1 ORDER BY number`,
+        `SELECT ec.id, ec.number, ec.label, ec.weight_percent AS "weightPercent", ec.is_active AS "isActive", ec.source, ec.confirmed_at AS "confirmedAt",
+                ie.exam_start::text AS "examStart", ie.exam_end::text AS "examEnd", ie.deferred_start::text AS "deferredStart", ie.deferred_end::text AS "deferredEnd",
+                ie.grades_correction_deadline::text AS "gradesCorrectionDeadline"
+           FROM evaluation_cycles ec
+           JOIN course_enrollments ce ON ce.id = ec.enrollment_id
+           JOIN courses c ON c.id = ce.course_id
+           LEFT JOIN academic_terms t ON t.id = c.term_id
+           LEFT JOIN institution_terms it ON it.term_name = t.name AND it.institution_id = t.institution_id
+           LEFT JOIN institution_evaluations ie ON ie.term_id = it.id AND ie.number = ec.number
+          WHERE ec.enrollment_id = $1 ORDER BY ec.number`,
         [enrollmentId],
       );
       const items = await db.query(
@@ -280,6 +288,64 @@ export function createAcademicRepository(db: Database) {
         [enrollmentId],
       );
       return { cycles: cycles.rows, items: items.rows };
+    },
+
+    /**
+     * Avance de las materias del estudiante en las evaluaciones del ciclo institucional.
+     * Los puntos son una ESTIMACIÓN con las notas de Blackboard (la nota oficial de cada evaluación la publica el docente en el portal).
+     */
+    async evaluationOverview(userId: string) {
+      const terms = await db.query<{ id: string; name: string; weight: string; passing: string; start: string | null; end: string | null; today: string }>(
+        `WITH own AS (${OWN_ENROLLMENTS})
+         SELECT DISTINCT it.id, it.term_name AS name, it.evaluation_weight_percent AS weight, it.passing_grade AS passing,
+                it.classes_start::text AS start, it.classes_end::text AS end, (now() AT TIME ZONE 'America/El_Salvador')::date::text AS today
+           FROM own JOIN courses c ON c.id = own.course_id JOIN academic_terms t ON t.id = c.term_id
+           JOIN institution_terms it ON it.term_name = t.name AND it.institution_id = t.institution_id
+          ORDER BY start DESC NULLS LAST`, [userId]);
+      const result = [];
+      for (const term of terms.rows) {
+        const evaluations = await db.query<{ number: number; examStart: string; examEnd: string; deferredStart: string | null; deferredEnd: string | null }>(
+          `SELECT number, exam_start::text AS "examStart", exam_end::text AS "examEnd", deferred_start::text AS "deferredStart", deferred_end::text AS "deferredEnd"
+             FROM institution_evaluations WHERE term_id = $1 ORDER BY number`, [term.id]);
+        const current = (evaluations.rows.find((e) => term.today <= e.examEnd) ?? evaluations.rows[evaluations.rows.length - 1])?.number ?? null;
+        const stats = await db.query<{ courseId: string; name: string; number: number; total: number; graded: number; earned: string | null; possible: string | null }>(
+          `WITH own AS (${OWN_ENROLLMENTS})
+           SELECT c.id AS "courseId", c.name, ec.number,
+                  count(*) FILTER (WHERE ${IS_ACTIVITY})::int AS total,
+                  count(*) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL)::int AS graded,
+                  sum(sg.score) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL) AS earned,
+                  sum(COALESCE(sg.points_possible, gc.points_possible)) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL) AS possible
+             FROM own
+             JOIN courses c ON c.id = own.course_id
+             JOIN academic_terms t ON t.id = c.term_id
+             JOIN institution_terms it ON it.term_name = t.name AND it.institution_id = t.institution_id AND it.id = $2
+             JOIN evaluation_cycles ec ON ec.enrollment_id = own.enrollment_id
+             LEFT JOIN evaluation_cycle_items i ON i.cycle_id = ec.id
+             LEFT JOIN student_grades sg ON sg.enrollment_id = i.enrollment_id AND sg.gradebook_column_id = i.gradebook_column_id
+             LEFT JOIN gradebook_columns gc ON gc.id = sg.gradebook_column_id
+            GROUP BY c.id, c.name, ec.number ORDER BY c.name, ec.number`, [userId, term.id]);
+        const weight = Number(term.weight); const passing = Number(term.passing);
+        const pointsPerEvaluation = (weight / 100) * 10;
+        const courses = new Map<string, { courseId: string; name: string; evaluations: Array<Record<string, unknown>> }>();
+        for (const row of stats.rows) {
+          const entry = courses.get(row.courseId) ?? courses.set(row.courseId, { courseId: row.courseId, name: row.name, evaluations: [] }).get(row.courseId)!;
+          const possible = row.possible === null ? 0 : Number(row.possible);
+          const percent = possible > 0 ? Number(row.earned) / possible : null;
+          entry.evaluations.push({ number: row.number, total: row.total, graded: row.graded, percent, points: percent === null ? null : percent * pointsPerEvaluation });
+        }
+        const summaries = [...courses.values()].map((course) => {
+          const scored = course.evaluations.filter((e) => e.points !== null);
+          const earned = scored.reduce((sum, e) => sum + (e.points as number), 0);
+          const available = (evaluations.rows.length - scored.length) * pointsPerEvaluation;
+          return { ...course, pointsEarned: earned, pointsAvailable: available, missingToPass: Math.max(0, passing - earned), reachable: earned + available >= passing };
+        });
+        result.push({
+          term: { name: term.name, passingGrade: passing, evaluationWeightPercent: weight, classesStart: term.start, classesEnd: term.end, today: term.today, currentEvaluation: current },
+          evaluations: evaluations.rows.map((e) => ({ ...e, status: e.number === current ? 'current' : term.today > e.examEnd ? 'closed' : 'upcoming' })),
+          courses: summaries,
+        });
+      }
+      return result;
     },
 
     /**

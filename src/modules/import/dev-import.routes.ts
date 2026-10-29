@@ -8,6 +8,7 @@ import { HttpError, notFound } from '../../shared/errors.js';
 import { createBlackboardGateway, SessionExpiredError } from '../blackboard/gateway.js';
 import { LoginError, loginInteractively } from '../blackboard/session-login.js';
 import { loadCredentials, markCredentialUse, saveCredentials } from '../credentials/vault.js';
+import { applyCalendar, importCalendar } from '../calendar/calendar.service.js';
 import { dispatchReviewMarks } from '../files/reviews.js';
 import { ImportError, UTEC, importStudent, type ImportMode, type ImportSummary } from './import.service.js';
 
@@ -134,6 +135,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
         const summary = await importStudent(db, createBlackboardGateway(captured.transport), setPhase, {
           mode, passingGradePct, onIdentity: async (accountId) => { await dispatchReviewMarks(db, accountId, (course, content, reviewed) => session.markReviewed(course, content, reviewed)); },
         });
+        await applyCalendar(db, { userId: summary.user.id }).catch(() => {});
         const { temporaryPassword, ...rest } = summary;
         if (toRemember && credentialsKey) {
           const account = await db.query<{ id: string }>(`SELECT id FROM external_accounts WHERE user_id = $1 AND link_status <> 'revoked' ORDER BY created_at LIMIT 1`, [summary.user.id]);
@@ -181,6 +183,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
           onIdentity: async (accountId) => { await dispatchReviewMarks(db, accountId, (course, content, reviewed) => session.markReviewed(course, content, reviewed)); },
         });
         changes = summary.sync.changesRecorded;
+        await applyCalendar(db, { userId: summary.user.id }).catch(() => {});
       } catch (error) {
         errorCode = error instanceof ImportError || error instanceof LoginError ? error.code : error instanceof SessionExpiredError ? 'blackboard_session_expired' : 'import_failed';
         if (!(error instanceof ImportError || error instanceof LoginError || error instanceof SessionExpiredError)) app.log.error({ err: { name: (error as Error)?.name } }, 'scheduled refresh failed');
@@ -226,6 +229,25 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
       }
     })();
     return reply.code(202).send({ operationId: operation.id, status: operation.phase, poll: `/internal/dev/utec/imports/${operation.id}` });
+  });
+
+  // Calendario académico: una vez al año. Sin "confirm" solo devuelve lo que entendió del instructivo (vista previa).
+  app.post<{ Body: { year: number; confirm?: boolean } }>('/internal/dev/utec/calendar/import', {
+    logLevel: 'warn', config: { rateLimit: { max: 10, timeWindow: '10 minutes' } },
+    schema: { hide: true, body: { type: 'object', additionalProperties: false, required: ['year'], properties: { year: { type: 'integer', minimum: 2020, maximum: 2100 }, confirm: { type: 'boolean' } } } },
+  }, async (request) => {
+    authorizeOperator(request);
+    try {
+      return await importCalendar(db, request.body.year, { confirm: request.body.confirm === true });
+    } catch (error) {
+      throw new HttpError(422, 'calendar_import_failed', (error as Error).message);
+    }
+  });
+
+  // Reparte las actividades de cada inscripción en sus evaluaciones según el calendario (sin tocar lo que el estudiante guardó a mano).
+  app.post('/internal/dev/utec/calendar/apply', { logLevel: 'warn', schema: { hide: true } }, async (request) => {
+    authorizeOperator(request);
+    return applyCalendar(db);
   });
 
   const routes: Array<[string, ImportMode, string]> = [
