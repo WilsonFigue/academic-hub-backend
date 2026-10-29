@@ -63,7 +63,11 @@ export function createAcademicRepository(db: Database) {
                 (SELECT count(*)::int FROM student_grades sg JOIN gradebook_columns gc ON gc.id = sg.gradebook_column_id
                   WHERE sg.enrollment_id = ce.id AND ${IS_ACTIVITY}) AS "activityCount",
                 (SELECT min(${EFFECTIVE_DUE}) FROM student_grades sg JOIN gradebook_columns gc ON gc.id = sg.gradebook_column_id
-                  WHERE sg.enrollment_id = ce.id AND ${IS_ACTIVITY} AND ${EFFECTIVE_DUE} >= now()) AS "nextDueAt"
+                  WHERE sg.enrollment_id = ce.id AND ${IS_ACTIVITY} AND ${EFFECTIVE_DUE} >= now()) AS "nextDueAt",
+                (SELECT json_build_object('unreadGrades', cs.unread_grades, 'announcementsUnread', cs.announcements_unread, 'announcementsPosted', cs.announcements_posted,
+                          'conversationsTotal', cs.conversations_total, 'conversationsUnread', cs.conversations_unread, 'forumUnread', cs.forum_unread,
+                          'contentWithNews', cs.content_with_news, 'capturedAt', cs.captured_at)
+                   FROM course_signals cs WHERE cs.enrollment_id = ce.id) AS signals
            FROM own
            JOIN course_enrollments ce ON ce.id = own.enrollment_id
            JOIN courses c ON c.id = own.course_id

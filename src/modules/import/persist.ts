@@ -398,3 +398,19 @@ export async function upsertOutcome(client: Queryable, enrollmentId: string, run
      decided ? 'configured_threshold' : null, decided ? input.thresholdPct : null, runId],
   );
 }
+
+export interface CourseSignals {
+  unreadGrades: number | null; announcementsUnread: number | null; announcementsPosted: number | null;
+  conversationsTotal: number | null; conversationsUnread: number | null; forumUnread: number | null; contentWithNews: number | null;
+}
+
+/** Reemplaza los avisos de Blackboard de la inscripción (solo contadores). */
+export async function upsertSignals(client: Queryable, enrollmentId: string, signals: CourseSignals): Promise<void> {
+  await client.query(
+    `INSERT INTO course_signals (enrollment_id, unread_grades, announcements_unread, announcements_posted, conversations_total, conversations_unread, forum_unread, content_with_news, captured_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+     ON CONFLICT (enrollment_id) DO UPDATE SET unread_grades = EXCLUDED.unread_grades, announcements_unread = EXCLUDED.announcements_unread,
+       announcements_posted = EXCLUDED.announcements_posted, conversations_total = EXCLUDED.conversations_total, conversations_unread = EXCLUDED.conversations_unread,
+       forum_unread = EXCLUDED.forum_unread, content_with_news = EXCLUDED.content_with_news, captured_at = now()`,
+    [enrollmentId, signals.unreadGrades, signals.announcementsUnread, signals.announcementsPosted, signals.conversationsTotal, signals.conversationsUnread, signals.forumUnread, signals.contentWithNews]);
+}

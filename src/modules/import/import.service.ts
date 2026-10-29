@@ -7,7 +7,7 @@ import { isObject, str, type BlackboardGateway, type Json, type ReadResult } fro
 import { columnChanges, gradeChanges, recordChange } from './changes.js';
 import { attemptIds, toDate, toNumber } from './normalize.js';
 import {
-  newCounters, upsertAnnouncement, upsertAttempt, upsertCalendarItem, upsertColumn, upsertContent, upsertCourse, upsertEnrollment,
+  newCounters, upsertAnnouncement, upsertAttempt, upsertSignals, upsertCalendarItem, upsertColumn, upsertContent, upsertCourse, upsertEnrollment,
   upsertException, upsertGrade, upsertOutcome, upsertSchema, upsertTerm, upsertTodo, type Counters, type OutcomeInput,
 } from './persist.js';
 
@@ -306,6 +306,8 @@ export async function importStudent(
       started = Date.now();
       const announcements = await gateway.announcements(courseExternalId);
       record('announcements', courseExternalId, announcements, started);
+      // Avisos de Blackboard (solo contadores); una falla aquí nunca detiene la actualización.
+      const signals = await gateway.signals(courseExternalId).catch(() => null);
 
       // ── persistencia de la materia en una transacción ──
       onPhase('persisting');
@@ -412,6 +414,7 @@ export async function importStudent(
           await upsertException(client, enrollmentId, courseId, exception, columnIds, runId, counter('due_date_exceptions'));
           academicData.dueDateExceptions! += 1;
         }
+        if (signals) await upsertSignals(client, enrollmentId, signals);
         for (const item of calendar.rows) { await upsertCalendarItem(client, institutionId, courseId, item, columnIds, runId, counter('calendar_items')); academicData.calendarItems! += 1; }
         for (const item of announcements.rows) {
           const result = await upsertAnnouncement(client, courseId, enrollmentId, item, runId, counter('course_announcements'));

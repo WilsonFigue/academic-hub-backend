@@ -204,6 +204,32 @@ export function createBlackboardGateway(transport: BlackboardTransport, limits: 
       paginate(`${course(courseId)}/calendars/calendarItems`, { since: since.toISOString(), until: until.toISOString() }),
     announcements: (courseId: string) => paginate(`${course(courseId)}/announcements`, { sort: 'startDateRestriction(desc)' }),
 
+    /**
+     * Lo que Blackboard ya sabe que el estudiante no ha visto en la materia (solo contadores). Cada lectura es independiente:
+     * si una falla (404/403/500), ese dato queda en null y las demás siguen. Nunca devuelve el contenido de mensajes ni foros.
+     */
+    async signals(courseId: string): Promise<Record<'unreadGrades' | 'announcementsUnread' | 'announcementsPosted' | 'conversationsTotal' | 'conversationsUnread' | 'forumUnread' | 'contentWithNews', number | null>> {
+      const read = async (path: string) => {
+        const response = await get(`${course(courseId)}${path}`).catch(() => ({ status: 0, body: null as unknown }));
+        return response.status === 200 ? response.body : null;
+      };
+      const count = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : null);
+      const [grades, announcements, forums, conversations, indicators] = await Promise.all([
+        read('/gradebook/unreadGradesCount'), read('/announcements/counts'), read('/discussionboards/count'), read('/conversations'), read('/contents/indicators'),
+      ]);
+      const rows = isObject(conversations) && Array.isArray(conversations.results) ? conversations.results.filter(isObject) : null;
+      const news = isObject(indicators) && Array.isArray(indicators.results) ? indicators.results.filter((row) => isObject(row) && row.newData === true).length : null;
+      return {
+        unreadGrades: isObject(grades) ? count(grades.count) : null,
+        announcementsUnread: isObject(announcements) ? count(announcements.unreadCount) : null,
+        announcementsPosted: isObject(announcements) ? count(announcements.postedCount) : null,
+        conversationsTotal: rows ? rows.length : null,
+        conversationsUnread: rows ? rows.reduce((sum, row) => sum + (count(row.unreadCount) ?? 0), 0) : null,
+        forumUnread: isObject(forums) ? count(forums.unreadCount) : null,
+        contentWithNews: news,
+      };
+    },
+
     /** Pendientes en ventanas de 14 días; un ítem en el borde de dos ventanas se conserva una vez (clave: column.id). */
     async todo(from: Date, to: Date): Promise<ReadResult<Json & { _bucket: 'overdue' | 'due_today' | 'upcoming' }>> {
       const result = emptyResult<Json & { _bucket: 'overdue' | 'due_today' | 'upcoming' }>();
