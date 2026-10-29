@@ -18,7 +18,10 @@
     "demo:seed": "tsx scripts/demo-seed.ts",
     "ui:review": "tsx scripts/ui-review.ts",
     "db:validate": "tsx scripts/validate-data.ts",
-    "ui:breakpoints": "tsx scripts/ui-breakpoints.ts"
+    "ui:breakpoints": "tsx scripts/ui-breakpoints.ts",
+    "refresh:full": "tsx scripts/refresh.ts full",
+    "refresh:daily": "tsx scripts/refresh.ts daily",
+    "credentials": "tsx scripts/credentials.ts"
   },
   "license": "UNLICENSED",
   "type": "module",

@@ -23,6 +23,12 @@ export interface AppConfig {
   blackboardReadOnly: boolean;
   /** Habilita las rutas /internal/dev (solo desarrollo, solo loopback). */
   devOperatorToken: string | null;
+  /** Nota mínima (en %) con la que se marca una materia cerrada como aprobada; sin valor, el resultado queda 'unknown'. */
+  passingGradePct: number | null;
+  /** Clave (32 bytes en base64) para cifrar las credenciales recordadas; sin ella no se pueden recordar. */
+  credentialsKey: Buffer | null;
+  /** Si es true, la actualización con credenciales recordadas abre Chromium visible (por si el sitio rechaza el modo sin ventana). */
+  scheduledLoginVisible: boolean;
 }
 
 export class ConfigError extends Error {
@@ -116,6 +122,22 @@ function databaseUrlFromParts(dbName: string | undefined, problems: string[], la
   return `postgresql://${encodeURIComponent(user!)}:${encodeURIComponent(password)}@${hostPart}:${port}/${encodeURIComponent(name!)}`;
 }
 
+function credentialsKey(problems: string[]): Buffer | null {
+  const raw = (process.env.CREDENTIALS_KEY ?? '').trim();
+  if (!raw) return null;
+  const key = Buffer.from(raw, 'base64');
+  if (key.length !== 32) { problems.push('CREDENTIALS_KEY debe ser una clave de 32 bytes en base64.'); return null; }
+  return key;
+}
+
+function passingPct(problems: string[]): number | null {
+  const raw = (process.env.PASSING_GRADE_PCT ?? '').trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0 || value > 100) { problems.push('PASSING_GRADE_PCT debe ser un número entre 0 y 100.'); return null; }
+  return value;
+}
+
 export function readConfig(): AppConfig {
   loadEnvFile();
   const problems: string[] = [];
@@ -165,6 +187,9 @@ export function readConfig(): AppConfig {
     cookieSameSite,
     blackboardReadOnly: bool('BLACKBOARD_READ_ONLY', true, problems),
     devOperatorToken: (process.env.DEV_OPERATOR_TOKEN ?? '').trim() || null,
+    passingGradePct: passingPct(problems),
+    credentialsKey: credentialsKey(problems),
+    scheduledLoginVisible: bool('SCHEDULED_LOGIN_VISIBLE', false, problems),
   };
   if (config.devOperatorToken && config.devOperatorToken.length < 32) problems.push('DEV_OPERATOR_TOKEN debe tener al menos 32 caracteres.');
   if (config.devOperatorToken && nodeEnv === 'production') problems.push('DEV_OPERATOR_TOKEN no puede definirse en producción.');

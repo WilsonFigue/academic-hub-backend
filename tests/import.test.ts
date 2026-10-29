@@ -176,4 +176,79 @@ describe('importador (transporte simulado, PostgreSQL real)', { skip: !testDatab
     await stranger.request('POST', '/api/v1/auth/register', { email: 'otro@test.invalid', password: 'Otra-clave-segura-1' });
     assert.equal((await stranger.request('GET', '/api/v1/changes')).json().changes.length, 0);
   });
+
+  // Estado de Blackboard tras los cambios de las pruebas anteriores (para que las actualizaciones no vean novedades distintas a las buscadas).
+  const settled = (routes: Routes) => {
+    const columns = (routes[`/learn/api/v1/courses/${COURSE}/gradebook/columns`] as { results: Array<Record<string, unknown>> }).results;
+    columns[0]!.dueDate = '2026-11-12T05:59:00.000Z';
+    columns.push({ id: '_g3', columnName: 'Tarea 2', possible: 10, dueDate: '2026-11-20T05:59:00.000Z', scoreProviderHandle: 'resource/x-bb-assessment', position: 3 });
+    const grades = (routes[`/learn/api/v1/courses/${COURSE}/gradebook/grades`] as { results: Array<Record<string, unknown>> }).results;
+    grades[0]!.effectiveScore = 9.5;
+    grades[0]!.version = 4;
+    (routes[`/learn/api/v1/courses/${COURSE}/announcements`] as { results: unknown[] }).results
+      .push({ id: '_an2', title: 'Cambio de aula', body: { rawText: '<p>Aula 3</p>' }, createdDate: '2026-11-01T12:00:00.000Z' });
+  };
+
+  test('actualización diaria: no relee el contenido, conserva sus enlaces y registra solo lo que cambió', async () => {
+    const before = (await ctx.db.query(`SELECT (SELECT count(*) FROM course_content_items)::int c, (SELECT count(*) FROM gradebook_columns WHERE content_item_id IS NOT NULL)::int linked`)).rows[0];
+    // Si el contenido o los esquemas se leyeran, estas rutas (que fallan) dejarían la sincronización en 'partial'.
+    const summary = await importStudent(ctx.db, createBlackboardGateway(fakeTransport((routes) => {
+      settled(routes);
+      (routes[`/learn/api/v1/courses/${COURSE}/announcements`] as { results: unknown[] }).results
+        .push({ id: '_an3', title: 'Examen movido', body: { rawText: '<p>Nueva fecha</p>' }, createdDate: '2026-11-02T12:00:00.000Z' });
+    }, ['/contents/ROOT/children', '/gradebook/schemas'])), () => {}, { mode: 'daily' });
+    assert.equal(summary.mode, 'daily');
+    assert.equal(summary.sync.status, 'succeeded');
+    assert.equal(summary.history, null);
+    assert.equal(summary.sync.changesRecorded, 1);
+    const after = (await ctx.db.query(`SELECT (SELECT count(*) FROM course_content_items)::int c, (SELECT count(*) FROM gradebook_columns WHERE content_item_id IS NOT NULL)::int linked`)).rows[0];
+    assert.deepEqual(after, before);
+    const trigger = await ctx.db.query(`SELECT trigger FROM sync_runs ORDER BY started_at DESC LIMIT 1`);
+    assert.equal(trigger.rows[0]!.trigger, 'dev_refresh_daily');
+  });
+
+  test('las actualizaciones no crean cuentas: una identidad desconocida se rechaza', async () => {
+    const users = (await ctx.db.query(`SELECT count(*)::int AS n FROM users`)).rows[0]!.n;
+    for (const mode of ['full', 'daily'] as const) {
+      await assert.rejects(
+        importStudent(ctx.db, createBlackboardGateway(fakeTransport((routes) => {
+          const me = routes['/learn/api/v1/users/me'] as Record<string, unknown>;
+          me.id = '_999_1'; me.emailAddress = 'otra.persona@test.invalid';
+        })), () => {}, { mode }),
+        (error: { code?: string }) => error.code === 'account_not_found',
+      );
+    }
+    assert.equal((await ctx.db.query(`SELECT count(*)::int AS n FROM users`)).rows[0]!.n, users);
+  });
+
+  test('actualización completa: registra el cierre y la calificación general; el resultado solo existe con un umbral', async () => {
+    const closed = (routes: Routes) => {
+      settled(routes);
+      const memberships = (routes['/learn/api/v1/users/me/memberships'] as { results: Array<{ course?: Record<string, unknown> }> }).results;
+      memberships[0]!.course!.isClosed = true;
+      const columns = (routes[`/learn/api/v1/courses/${COURSE}/gradebook/columns`] as { results: Array<Record<string, unknown>> }).results;
+      columns.find((column) => column.id === '_g2')!.externalGrade = true;
+      const grades = (routes[`/learn/api/v1/courses/${COURSE}/gradebook/grades`] as { results: Array<Record<string, unknown>> }).results;
+      Object.assign(grades.find((grade) => grade.columnId === '_g2')!, { id: '_gr2', status: 'GRADED', effectiveScore: 72, pointsPossible: 100, displayGrade: { score: 72 } });
+    };
+    const outcome = async () => (await ctx.db.query(`SELECT state, closed_reason, final_column_name, final_score::float AS score, outcome, outcome_basis FROM enrollment_outcomes`)).rows[0];
+
+    const sinUmbral = await importStudent(ctx.db, createBlackboardGateway(fakeTransport(closed)), () => {}, { mode: 'full' });
+    assert.equal(sinUmbral.mode, 'full');
+    assert.deepEqual(await outcome(), { state: 'closed', closed_reason: 'course_closed', final_column_name: 'Promedio evaluación 01', score: 72, outcome: 'unknown', outcome_basis: null });
+    assert.equal(sinUmbral.history?.closed, 1);
+    assert.equal(sinUmbral.history?.unknown, 1);
+
+    await importStudent(ctx.db, createBlackboardGateway(fakeTransport(closed)), () => {}, { mode: 'full', passingGradePct: 60 });
+    assert.equal((await outcome())!.outcome, 'passed');
+    assert.equal((await outcome())!.outcome_basis, 'configured_threshold');
+    await importStudent(ctx.db, createBlackboardGateway(fakeTransport(closed)), () => {}, { mode: 'full', passingGradePct: 80 });
+    assert.equal((await outcome())!.outcome, 'failed');
+  });
+
+  test('una materia en curso nunca queda con resultado, aunque haya umbral', async () => {
+    await importStudent(ctx.db, createBlackboardGateway(fakeTransport(settled)), () => {}, { mode: 'full', passingGradePct: 60 });
+    const row = (await ctx.db.query(`SELECT state, outcome FROM enrollment_outcomes`)).rows[0];
+    assert.deepEqual(row, { state: 'in_progress', outcome: 'unknown' });
+  });
 });

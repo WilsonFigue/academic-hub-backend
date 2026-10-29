@@ -5,10 +5,10 @@ import { generateTemporaryPassword } from '../../shared/crypto.js';
 import { hashPassword } from '../auth/password.js';
 import { isObject, str, type BlackboardGateway, type Json, type ReadResult } from '../blackboard/gateway.js';
 import { columnChanges, gradeChanges, recordChange } from './changes.js';
-import { attemptIds, toDate } from './normalize.js';
+import { attemptIds, toDate, toNumber } from './normalize.js';
 import {
   newCounters, upsertAnnouncement, upsertAttempt, upsertCalendarItem, upsertColumn, upsertContent, upsertCourse, upsertEnrollment,
-  upsertException, upsertGrade, upsertSchema, upsertTerm, upsertTodo, type Counters,
+  upsertException, upsertGrade, upsertOutcome, upsertSchema, upsertTerm, upsertTodo, type Counters, type OutcomeInput,
 } from './persist.js';
 
 export const ADAPTER_VERSION = 'bb-gateway/0.1.0+blackboard-mcp@0.1.2';
@@ -34,7 +34,28 @@ export class ImportError extends Error {
   }
 }
 
+/**
+ * onboarding: primera importación (puede crear la cuenta). full: actualización completa de una cuenta existente, con contenido,
+ * materias cerradas e historial. daily: actualización ligera de lo que cambia a diario (sin contenido ni materias cerradas).
+ */
+export type ImportMode = 'onboarding' | 'full' | 'daily';
+export interface ImportOptions {
+  mode?: ImportMode;
+  /** Nota mínima (en %) para marcar una materia cerrada como aprobada. Sin valor, el resultado queda 'unknown'. */
+  passingGradePct?: number | null;
+  /** Origen registrado en sync_runs (por defecto, según el modo). */
+  trigger?: 'scheduled';
+}
+const TRIGGERS: Record<ImportMode, string> = { onboarding: 'dev_import', full: 'dev_refresh_full', daily: 'dev_refresh_daily' };
+const GRACE_MS = 3 * DAY_MS;
+
+export interface HistorySummary { closed: number; inProgress: number; withFinalGrade: number; passed: number; failed: number; unknown: number; threshold: number | null }
+
 export interface ImportSummary {
+  mode: ImportMode;
+  /** Materias omitidas por estar cerradas (solo en la actualización diaria). */
+  skippedClosed: number;
+  history: HistorySummary | null;
   user: { id: string; username: string | null; email: string; displayName: string | null };
   created: boolean;
   temporaryPassword: string | null;
@@ -73,7 +94,7 @@ async function availableUsername(client: Queryable, given: string | undefined, f
 }
 
 /** Busca la cuenta vinculada a la identidad Blackboard; si no existe, crea usuario + cuenta en una transacción. */
-async function linkIdentity(db: Database, institutionId: string, profile: Json, locale: string | null) {
+async function linkIdentity(db: Database, institutionId: string, profile: Json, locale: string | null, allowCreate: boolean) {
   const lmsUserId = String(profile.id);
   const given = str(profile.givenName);
   const family = str(profile.familyName);
@@ -104,6 +125,7 @@ async function linkIdentity(db: Database, institutionId: string, profile: Json, 
       return { accountId: existing.rows[0].id, user: user.rows[0]!, created: false, temporaryPassword: null };
     }
 
+    if (!allowCreate) throw new ImportError('account_not_found', 'Esta identidad de Blackboard no está vinculada a una cuenta de Academic Hub. Crea el usuario primero con la importación inicial.');
     if (!email) throw new ImportError('missing_email', 'Blackboard no devolvió un correo institucional; no se puede crear la cuenta automáticamente.');
     // No se vincula por coincidencia de correo: si el correo ya pertenece a otra cuenta, es un conflicto administrativo.
     const emailTaken = await client.query('SELECT 1 FROM users WHERE lower(email) = lower($1)', [email]);
@@ -135,17 +157,31 @@ function lmsUrlFor(course: Json): string {
   return `${UTEC.lmsBaseUrl}/ultra/courses/${encodeURIComponent(String(course.id))}/outline`;
 }
 
+/** Estado de cierre observado: Blackboard marca la materia cerrada, o terminó el período o la materia. */
+function closureOf(course: Json, term: Json | null, now: number): { state: 'in_progress' | 'closed'; reason: OutcomeInput['closedReason']; at: Date | null } {
+  const termEnd = term ? toDate(term.endDate) : null;
+  const courseEnd = toDate(course.endDate);
+  if (course.isClosed === true) return { state: 'closed', reason: 'course_closed', at: courseEnd ?? termEnd };
+  if (termEnd && termEnd.getTime() < now) return { state: 'closed', reason: 'term_ended', at: termEnd };
+  if (courseEnd && courseEnd.getTime() < now) return { state: 'closed', reason: 'course_ended', at: courseEnd };
+  return { state: 'in_progress', reason: null, at: null };
+}
+
 export async function importStudent(
   db: Database,
   gateway: BlackboardGateway,
   onPhase: (phase: 'extracting' | 'persisting') => void,
+  options: ImportOptions = {},
 ): Promise<ImportSummary> {
+  const mode: ImportMode = options.mode ?? 'onboarding';
+  const daily = mode === 'daily';
+  const passingPct = options.passingGradePct ?? null;
   // 1. Identidad verificada con la sesión real (antes de crear nada).
   const { user: profile, locale, result: profileRead } = await gateway.profile();
   if (profileRead.status !== 'succeeded' || !str(profile.id)) throw new ImportError('profile_unavailable', 'No fue posible verificar la identidad en Blackboard.');
 
   const institutionId = await ensureInstitution(db);
-  const identity = await linkIdentity(db, institutionId, profile, locale);
+  const identity = await linkIdentity(db, institutionId, profile, locale, mode === 'onboarding');
 
   // Línea base: sin una importación previa terminada, nada de lo encontrado es "novedad".
   const previous = await db.query<{ has_previous: boolean; term_ids: string[] | null }>(
@@ -161,8 +197,8 @@ export async function importStudent(
   let runId: string;
   try {
     const run = await db.query<{ id: string }>(
-      `INSERT INTO sync_runs (external_account_id, trigger, adapter_version) VALUES ($1, 'dev_import', $2) RETURNING id`,
-      [identity.accountId, ADAPTER_VERSION],
+      `INSERT INTO sync_runs (external_account_id, trigger, adapter_version) VALUES ($1, $2, $3) RETURNING id`,
+      [identity.accountId, options.trigger ?? TRIGGERS[mode], ADAPTER_VERSION],
     );
     runId = run.rows[0]!.id;
   } catch (error) {
@@ -170,6 +206,7 @@ export async function importStudent(
     throw error;
   }
 
+  let skippedClosed = 0;
   const steps: Step[] = [];
   const rows: Record<string, Counters> = {};
   const counter = (name: string) => (rows[name] ??= newCounters());
@@ -185,7 +222,17 @@ export async function importStudent(
     record('memberships', null, memberships, started);
     if (memberships.status === 'failed') throw new ImportError('memberships_unavailable', 'No fue posible leer las inscripciones.');
 
-    const enrollments = memberships.rows.filter((m) => isObject(m.course) && str(m.course.id) && m.course.isOrganization !== true);
+    const now = Date.now();
+    const all = memberships.rows.filter((m) => isObject(m.course) && str(m.course.id) && m.course.isOrganization !== true);
+    // La actualización diaria solo recorre materias en curso; las cerradas se actualizan en la completa.
+    const isLive = (m: Json) => {
+      const course = m.course as Json;
+      const term = isObject(course.term) ? course.term : null;
+      const end = term ? toDate(term.endDate) : null;
+      return course.isClosed !== true && !(end && end.getTime() < now - GRACE_MS);
+    };
+    const enrollments = daily ? all.filter(isLive) : all;
+    skippedClosed = all.length - enrollments.length;
     const termWindow = enrollments
       .map((m) => (isObject((m.course as Json).term) ? (m.course as Json).term as Json : {}))
       .flatMap((term) => [toDate(term.startDate), toDate(term.endDate)])
@@ -209,11 +256,13 @@ export async function importStudent(
 
       // ── extracción (sin transacciones abiertas) ──
       started = Date.now();
-      const content = await gateway.contentTree(courseExternalId);
-      record('content', courseExternalId, content, started);
+      // La actualización diaria no relee el árbol de contenido ni los esquemas (casi nunca cambian).
+      const emptyRead = { rows: [] as never[], status: 'succeeded' as const, complete: true, truncated: false, pages: 0, httpStatusCounts: {}, errorCode: null };
+      const content = daily ? emptyRead : await gateway.contentTree(courseExternalId);
+      if (!daily) record('content', courseExternalId, content, started);
       started = Date.now();
-      const schemas = await gateway.gradingSchemas(courseExternalId);
-      record('grading_schemas', courseExternalId, schemas, started);
+      const schemas = daily ? emptyRead : await gateway.gradingSchemas(courseExternalId);
+      if (!daily) record('grading_schemas', courseExternalId, schemas, started);
       started = Date.now();
       const columns = await gateway.gradebookColumns(courseExternalId);
       record('gradebook_columns', courseExternalId, columns, started);
@@ -281,10 +330,17 @@ export async function importStudent(
             changeType: 'created', kind: 'course_new', changedFields: [], before: null, after: { name: str(course.name) ?? null } });
         }
 
-        const contentIds = content.status === 'failed'
-          ? new Map<string, string>()
-          : await upsertContent(client, courseId, enrollmentId, content.rows, runId, counter('course_content_items'));
-        academicData.contentItems! += contentIds.size;
+        let contentIds: Map<string, string>;
+        if (daily) {
+          // Sin releer el contenido: se conserva el enlace de cada columna con su contenido ya guardado.
+          const known = await client.query<{ external_id: string; id: string }>('SELECT external_id, id FROM course_content_items WHERE course_id = $1', [courseId]);
+          contentIds = new Map(known.rows.map((row) => [row.external_id, row.id]));
+        } else {
+          contentIds = content.status === 'failed'
+            ? new Map<string, string>()
+            : await upsertContent(client, courseId, enrollmentId, content.rows, runId, counter('course_content_items'));
+          academicData.contentItems! += contentIds.size;
+        }
         for (const schema of schemas.rows) await upsertSchema(client, courseId, schema, runId, counter('grading_schemas'));
 
         const columnIds = new Map<string, string>();
@@ -332,6 +388,22 @@ export async function importStudent(
             if (todoItem) { await upsertTodo(client, enrollmentId, courseId, columnIds.get(external)!, todoItem.bucket, todoItem.due, runId); academicData.todoItems! += 1; }
           }
         }
+        if (!daily) {
+          // Historial: estado de cierre observado y, si Blackboard marca una calificación general, su valor.
+          const closure = closureOf(course, term, now);
+          const finalColumn = columns.rows.find((column) => column.externalGrade === true || column.isExternalGrade === true) ?? null;
+          const finalGrade = finalColumn ? gradesByColumn.get(String(finalColumn.id)) ?? null : null;
+          const finalScore = finalGrade ? toNumber(finalGrade.effectiveScore ?? finalGrade.score) : null;
+          const finalPossible = finalGrade ? toNumber(finalGrade.pointsPossible) ?? (finalColumn ? toNumber(finalColumn.possible) : null) : null;
+          const pct = finalScore !== null && finalPossible !== null && finalPossible > 0 ? (finalScore / finalPossible) * 100 : null;
+          const decided = closure.state === 'closed' && passingPct !== null && pct !== null;
+          await upsertOutcome(client, enrollmentId, runId, {
+            state: closure.state, closedReason: closure.reason, closedAt: closure.at,
+            finalColumnExternalId: finalColumn ? String(finalColumn.id) : null, finalColumnName: finalColumn ? str(finalColumn.columnName) ?? null : null,
+            finalScore, finalPointsPossible: finalPossible, finalDisplay: finalGrade && isObject(finalGrade.displayGrade) ? finalGrade.displayGrade : null,
+            outcome: decided ? (pct! >= passingPct! ? 'passed' : 'failed') : 'unknown', thresholdPct: decided ? passingPct : null,
+          });
+        }
         for (const exception of exceptions?.rows ?? []) {
           await upsertException(client, enrollmentId, courseId, exception, columnIds, runId, counter('due_date_exceptions'));
           academicData.dueDateExceptions! += 1;
@@ -353,10 +425,23 @@ export async function importStudent(
     throw error;
   }
 
+  let history: HistorySummary | null = null;
+  if (!daily) {
+    const { rows: stats } = await db.query<{ closed: number; in_progress: number; with_final: number; passed: number; failed: number; unknown: number }>(
+      `SELECT count(*) FILTER (WHERE o.state = 'closed')::int AS closed, count(*) FILTER (WHERE o.state = 'in_progress')::int AS in_progress,
+              count(*) FILTER (WHERE o.final_score IS NOT NULL)::int AS with_final, count(*) FILTER (WHERE o.outcome = 'passed')::int AS passed,
+              count(*) FILTER (WHERE o.outcome = 'failed')::int AS failed, count(*) FILTER (WHERE o.outcome = 'unknown')::int AS unknown
+         FROM enrollment_outcomes o JOIN course_enrollments ce ON ce.id = o.enrollment_id WHERE ce.external_account_id = $1`,
+      [identity.accountId],
+    );
+    const row = stats[0]!;
+    history = { closed: row.closed, inProgress: row.in_progress, withFinalGrade: row.with_final, passed: row.passed, failed: row.failed, unknown: row.unknown, threshold: passingPct };
+  }
   const incompleteSteps = steps.filter((step) => !step.read.complete).map((step) => ({ resource: step.resource, errorCode: step.read.errorCode }));
   const status = incompleteSteps.length === 0 ? 'succeeded' : 'partial';
   await finishRun(db, runId, steps, status, null, { ...academicData, changesRecorded, baseline: baseline ? 1 : 0 }, rows);
   return {
+    mode, skippedClosed, history,
     user: { id: identity.user.id, username: identity.user.username, email: identity.user.email, displayName: identity.user.display_name },
     created: identity.created,
     temporaryPassword: identity.temporaryPassword,

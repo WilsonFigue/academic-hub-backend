@@ -8,10 +8,10 @@ import { devImportRoutes } from '../src/modules/import/dev-import.routes.js';
 
 // Ninguna prueba envía una solicitud válida completa: eso abriría Chromium contra UTEC.
 const TOKEN = 'x'.repeat(40);
-const URL = '/internal/dev/utec/create-user';
+const URLS = ['/internal/dev/utec/create-user', '/internal/dev/utec/refresh/full', '/internal/dev/utec/refresh/daily'];
 const body = { username: 'usuario', password: 'contraseña' };
 
-describe('protecciones de /internal/dev/utec/create-user', () => {
+describe('protecciones de /internal/dev/utec (crear usuario, actualización completa y diaria)', () => {
   let app: FastifyInstance;
 
   before(async () => {
@@ -24,33 +24,45 @@ describe('protecciones de /internal/dev/utec/create-user', () => {
   after(async () => { await app.close(); });
 
   test('sin token de operador → 401', async () => {
-    const response = await app.inject({ method: 'POST', url: URL, payload: body });
-    assert.equal(response.statusCode, 401);
+    for (const URL of URLS) {
+      const response = await app.inject({ method: 'POST', url: URL, payload: body });
+      assert.equal(response.statusCode, 401);
+    }
   });
 
   test('token incorrecto → 401', async () => {
-    const response = await app.inject({ method: 'POST', url: URL, payload: body, headers: { 'x-dev-operator-token': 'y'.repeat(40) } });
-    assert.equal(response.statusCode, 401);
+    for (const URL of URLS) {
+      const response = await app.inject({ method: 'POST', url: URL, payload: body, headers: { 'x-dev-operator-token': 'y'.repeat(40) } });
+      assert.equal(response.statusCode, 401);
+    }
   });
 
   test('solicitud con Origin (navegador) → 403', async () => {
-    const response = await app.inject({ method: 'POST', url: URL, payload: body, headers: { 'x-dev-operator-token': TOKEN, origin: 'http://localhost:5173' } });
-    assert.equal(response.statusCode, 403);
+    for (const URL of URLS) {
+      const response = await app.inject({ method: 'POST', url: URL, payload: body, headers: { 'x-dev-operator-token': TOKEN, origin: 'http://localhost:5173' } });
+      assert.equal(response.statusCode, 403);
+    }
   });
 
   test('origen de red no loopback → 404', async () => {
-    const response = await app.inject({ method: 'POST', url: URL, payload: body, remoteAddress: '10.0.0.5', headers: { 'x-dev-operator-token': TOKEN } });
-    assert.equal(response.statusCode, 404);
+    for (const URL of URLS) {
+      const response = await app.inject({ method: 'POST', url: URL, payload: body, remoteAddress: '10.0.0.5', headers: { 'x-dev-operator-token': TOKEN } });
+      assert.equal(response.statusCode, 404);
+    }
   });
 
   test('campos adicionales en el BODY → 400', async () => {
-    const response = await app.inject({ method: 'POST', url: URL, payload: { ...body, email: 'x@y.z' }, headers: { 'x-dev-operator-token': TOKEN } });
-    assert.equal(response.statusCode, 400);
+    for (const URL of URLS) {
+      const response = await app.inject({ method: 'POST', url: URL, payload: { ...body, email: 'x@y.z' }, headers: { 'x-dev-operator-token': TOKEN } });
+      assert.equal(response.statusCode, 400);
+    }
   });
 
   test('las credenciales no aparecen en la respuesta de error', async () => {
-    const response = await app.inject({ method: 'POST', url: URL, payload: body });
-    assert.ok(!response.body.includes('contraseña'));
+    for (const URL of URLS) {
+      const response = await app.inject({ method: 'POST', url: URL, payload: body });
+      assert.ok(!response.body.includes('contraseña'));
+    }
   });
 
   test('operación inexistente → 404', async () => {
@@ -60,8 +72,10 @@ describe('protecciones de /internal/dev/utec/create-user', () => {
 
   test('sin registerInternal (producción) la ruta no existe', async () => {
     const production = await buildApp({ config: readConfig(), db: null, logger: false });
-    const response = await production.inject({ method: 'POST', url: URL, payload: body, headers: { 'x-dev-operator-token': TOKEN } });
-    assert.equal(response.statusCode, 404);
+    for (const URL of URLS) {
+        const response = await production.inject({ method: 'POST', url: URL, payload: body, headers: { 'x-dev-operator-token': TOKEN } });
+        assert.equal(response.statusCode, 404);
+    }
     await production.close();
   });
 });

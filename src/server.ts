@@ -16,7 +16,8 @@ async function main(): Promise<void> {
     registerInternal: internalEnabled
       ? async (instance) => {
           const { devImportRoutes } = await import('./modules/import/dev-import.routes.js');
-          await instance.register(devImportRoutes, { db: db!, operatorToken: config.devOperatorToken! });
+          await instance.register(devImportRoutes, { db: db!, operatorToken: config.devOperatorToken!, passingGradePct: config.passingGradePct,
+            credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible });
         }
       : undefined,
   });

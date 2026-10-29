@@ -8,7 +8,7 @@ import type { BlackboardTransport } from './gateway.js';
 export type LoginPhase = 'authenticating' | 'awaiting_mfa';
 
 export class LoginError extends Error {
-  constructor(readonly code: 'login_timeout' | 'login_not_ultra' | 'browser_failed', message: string) {
+  constructor(readonly code: 'login_timeout' | 'login_not_ultra' | 'browser_failed' | 'mfa_required', message: string) {
     super(message);
     this.name = 'LoginError';
   }
@@ -33,6 +33,14 @@ function credentialHostAllowed(hostname: string, baseHost: string): boolean {
   return hostname === baseHost || hostname === 'utec.edu.sv' || hostname.endsWith('.utec.edu.sv');
 }
 
+export interface LoginOptions {
+  /** Sin ventana de Chromium (inicio de sesión desatendido). */
+  headless?: boolean;
+  timeoutMs?: number;
+  /** Si aparece un código de verificación, falla de inmediato en lugar de esperar al titular. */
+  failOnMfa?: boolean;
+}
+
 export interface CapturedSession {
   transport: BlackboardTransport;
   /** Descarta cookies y referencias; debe llamarse al terminar. */
@@ -47,6 +55,7 @@ export async function loginInteractively(
   baseUrl: string,
   credentials: { username: string; password: string },
   onPhase: (phase: LoginPhase) => void,
+  options: LoginOptions = {},
 ): Promise<CapturedSession> {
   const { chromium } = await import('playwright');
   const sdk = await import('blackboard-mcp');
@@ -56,7 +65,7 @@ export async function loginInteractively(
 
   const baseHost = new URL(baseUrl).hostname;
   const executablePath = resolveChromiumExecutable(chromium);
-  const browser = await chromium.launch({ headless: false, ...(executablePath ? { executablePath } : {}) })
+  const browser = await chromium.launch({ headless: options.headless ?? false, ...(executablePath ? { executablePath } : {}) })
     .catch(() => { throw new LoginError('browser_failed', 'No fue posible iniciar Chromium.'); });
   try {
     const context = await browser.newContext({ userAgent: sdk.DEFAULT_USER_AGENT });
@@ -85,12 +94,13 @@ export async function loginInteractively(
     }
 
     // Espera a Ultra; mientras tanto, si se ve un formulario de código, el titular debe completar el MFA.
-    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+    const deadline = Date.now() + (options.timeoutMs ?? LOGIN_TIMEOUT_MS);
     let reachedUltra = false;
     while (Date.now() < deadline) {
       const current = new URL(page.url());
       if (current.hostname === baseHost && current.pathname.startsWith('/ultra')) { reachedUltra = true; break; }
       const mfa = await page.locator('input[autocomplete="one-time-code"], input[name*="code" i], input[id*="otp" i]').first().isVisible().catch(() => false);
+      if (mfa && options.failOnMfa) throw new LoginError('mfa_required', 'UTEC pidió un código de verificación; la actualización automática no lo esquiva.');
       onPhase(mfa ? 'awaiting_mfa' : 'authenticating');
       await page.waitForTimeout(1_500);
     }

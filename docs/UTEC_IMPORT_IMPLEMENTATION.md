@@ -93,3 +93,42 @@ Cada upsert devuelve sus valores anteriores y nuevos (`RETURNING old/new`). La p
 ## Restricciones para producción
 
 No existe en producción. La sincronización desatendida requiere una decisión institucional (OAuth 3LO u otra autorización explícita); no se almacenan contraseñas, cookies ni secretos TOTP.
+
+## Actualizaciones de datos: completa y diaria
+
+Además de la importación inicial, hay dos operaciones para **cuentas ya vinculadas**. Ambas usan el mismo mecanismo y las mismas protecciones que `create-user` (loopback, token de operador, sin `Origin`, una a la vez, credenciales solo en memoria, MFA manual) y **no crean cuentas**: una identidad Blackboard sin cuenta responde `account_not_found`.
+
+| Método | Ruta | Qué hace | Límite |
+|---|---|---|---|
+| POST | `/internal/dev/utec/refresh/full` | Actualización completa: inscripciones (incluidas las cerradas), árbol de contenido, esquemas, columnas, notas, intentos, excepciones, calendario, anuncios y pendientes; además guarda el **historial de materias** | 10 / 10 min |
+| POST | `/internal/dev/utec/refresh/daily` | Actualización ligera de lo que cambia a diario: columnas, notas, intentos, excepciones, calendario, anuncios y pendientes de las materias **en curso**. No relee contenido ni esquemas (conserva los enlaces columna → contenido ya guardados) y omite materias cerradas | 30 / 10 min |
+
+Mismo cuerpo exacto `{ "username", "password" }` y mismo estado en `GET /internal/dev/utec/imports/:operationId`. La respuesta completada incluye `mode`, `history` (solo en la completa) y `skippedClosed` (solo en la diaria). Cada ejecución queda en `sync_runs` con `trigger` = `dev_refresh_full` o `dev_refresh_daily`, y registra novedades igual que la importación inicial.
+
+Desde terminal: `npm run refresh:full` o `npm run refresh:daily` piden usuario y contraseña (oculta) y repiten para cada usuario que se quiera actualizar.
+
+### Historial de materias (`enrollment_outcomes`, migración 0013)
+
+Una fila por inscripción, calculada en la actualización completa solo con lo que Blackboard muestra:
+
+- **Estado**: `closed` si Blackboard marca la materia cerrada (`course_closed`), si terminó el período (`term_ended`) o si terminó la materia (`course_ended`); si no, `in_progress`. `closed_at` es la fecha de fin observada.
+- **Calificación general**: la columna que Blackboard marca como calificación general (`externalGrade`); se guardan su nombre, nota, puntos posibles y `displayGrade`. Si ninguna columna la marca, queda vacía.
+- **Resultado** (`passed` / `failed` / `unknown`): **solo** para materias cerradas con calificación general, y **solo** si el operador define `PASSING_GRADE_PCT` (nota mínima en %, 0–100). Se guarda con `outcome_basis = configured_threshold` y el umbral usado. Sin umbral, o si falta la nota, el resultado es `unknown`: no se asume ninguna regla de aprobación.
+
+Limitación conocida: la lectura de inscripciones es la de siempre (`/users/me/memberships`); si el campus virtual no devuelve materias de ciclos anteriores, no hay historial que guardar. El resumen `history` de la actualización completa lo dice con números (`closed`, `inProgress`, `withFinalGrade`, `passed`, `failed`, `unknown`).
+
+### Automatización diaria
+
+La actualización diaria **no puede dispararse sola** con las reglas actuales: necesita una sesión de Blackboard y hoy esa sesión solo se obtiene con usuario, contraseña y MFA a mano, y no se guardan contraseñas, cookies ni secretos TOTP. Disparar la ruta diaria desde un programador solo tiene sentido cuando exista una autorización explícita sin contraseña (por ejemplo OAuth 3LO), que es una decisión institucional. Mientras tanto se ejecuta a mano con `npm run refresh:daily`.
+
+## Credenciales recordadas y actualización con ellas
+
+Decisión del titular del proyecto (reemplaza la regla anterior de "no guardar credenciales" **solo para quien lo pida**): un usuario puede pedir que se recuerden su usuario y contraseña de Blackboard para poder actualizar sin escribirlas.
+
+- **Consentimiento por usuario**: las credenciales solo se guardan si, al ejecutar `npm run refresh:full` o `refresh:daily`, se responde "s" a "¿Recordar estas credenciales?" (cuerpo `remember: true`). Sin esa respuesta, la contraseña se descarta como antes.
+- **Cifrado**: usuario y contraseña se guardan juntos en `account_credentials` (migración 0014), cifrados con AES-256-GCM; el AAD es el id de la cuenta. La clave (`CREDENTIALS_KEY`, 32 bytes en base64) vive en `.env`, que no se versiona, **nunca en la base**. Quien tenga la base **y** el `.env` puede descifrarlas: no los compartas ni subas `.env`.
+- **Nunca se muestran**: ni la API ni los logs devuelven credenciales; `npm run credentials -- status` solo indica quién las tiene y cómo le fue a la última ejecución.
+- **Borrado**: `npm run credentials -- forget <usuario>` las elimina.
+- **Sin esquivar el MFA**: el inicio de sesión con credenciales recordadas corre sin ventana (`SCHEDULED_LOGIN_VISIBLE=true` la muestra). Si UTEC pide un código de verificación o cambia el flujo, la ejecución falla con `mfa_required` (o `login_timeout`) y queda registrada en `last_error_code`; no se intenta saltar nada.
+- **Endpoint**: `POST /internal/dev/utec/refresh/stored` (sin cuerpo; mismas protecciones que las demás rutas internas) ejecuta la actualización diaria de todas las cuentas con credenciales recordadas y se consulta en `GET /internal/dev/utec/imports/:operationId` (`stored`: resultado por cuenta). Se registra con `trigger = scheduled`.
+- **La API no programa nada**: no hay rutinas ni temporizadores dentro de la API. Si más adelante se quiere automatizar, un programador externo debe llamar a ese endpoint.

@@ -366,3 +366,35 @@ export async function upsertTodo(client: Queryable, enrollmentId: string, course
     [enrollmentId, columnId, courseId, bucket, dueAt, runId],
   );
 }
+
+export interface OutcomeInput {
+  state: 'in_progress' | 'closed';
+  closedReason: 'course_closed' | 'term_ended' | 'course_ended' | null;
+  closedAt: Date | null;
+  finalColumnExternalId: string | null;
+  finalColumnName: string | null;
+  finalScore: number | null;
+  finalPointsPossible: number | null;
+  finalDisplay: Json | null;
+  outcome: 'passed' | 'failed' | 'unknown';
+  thresholdPct: number | null;
+}
+
+/** Guarda el estado de cierre y la calificación general observados; el resultado solo existe con un umbral configurado. */
+export async function upsertOutcome(client: Queryable, enrollmentId: string, runId: string, input: OutcomeInput): Promise<void> {
+  const decided = input.outcome !== 'unknown';
+  await client.query(
+    `INSERT INTO enrollment_outcomes (enrollment_id, state, closed_reason, closed_at, final_column_external_id, final_column_name, final_score,
+                                      final_points_possible, final_display, outcome, outcome_basis, outcome_threshold_pct, sync_run_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     ON CONFLICT (enrollment_id) DO UPDATE SET
+       state = excluded.state, closed_reason = excluded.closed_reason, closed_at = excluded.closed_at,
+       final_column_external_id = excluded.final_column_external_id, final_column_name = excluded.final_column_name,
+       final_score = excluded.final_score, final_points_possible = excluded.final_points_possible, final_display = excluded.final_display,
+       outcome = excluded.outcome, outcome_basis = excluded.outcome_basis, outcome_threshold_pct = excluded.outcome_threshold_pct,
+       evaluated_at = now(), sync_run_id = excluded.sync_run_id`,
+    [enrollmentId, input.state, input.closedReason, input.closedAt, input.finalColumnExternalId, input.finalColumnName, input.finalScore,
+     input.finalPointsPossible, input.finalDisplay ? JSON.stringify(input.finalDisplay) : null, input.outcome,
+     decided ? 'configured_threshold' : null, decided ? input.thresholdPct : null, runId],
+  );
+}
