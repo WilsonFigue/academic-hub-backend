@@ -179,6 +179,16 @@ describe('API Academic Hub (PostgreSQL real, esquema de pruebas)', { skip }, () 
       assert.equal((await bob.request('GET', `/api/v1/activities/${ids.gA}`)).statusCode, 404);
     });
 
+    test('las preferencias del tablero son por usuario y se sanean', async () => {
+      assert.equal((await alice.request('GET', '/api/v1/me/preferences/activities_board')).json().value, null);
+      const saved = await alice.request('PUT', '/api/v1/me/preferences/activities_board', { value: { order: ['graded', 'graded', 'x', 'pending'], minimized: ['overdue', 'zzz'], hidden: ['nodate'] } });
+      assert.equal(saved.statusCode, 200);
+      assert.deepEqual(saved.json().value, { order: ['graded', 'pending', 'overdue', 'submitted', 'nodate'], minimized: ['overdue'], hidden: ['nodate'] });
+      assert.deepEqual((await alice.request('GET', '/api/v1/me/preferences/activities_board')).json().value, saved.json().value);
+      assert.equal((await bob.request('GET', '/api/v1/me/preferences/activities_board')).json().value, null);
+      assert.equal((await alice.request('GET', '/api/v1/me/preferences/otra_cosa')).statusCode, 400);
+    });
+
     test('actividades excluyen columnas calculadas', async () => {
       const activities = (await alice.request('GET', '/api/v1/activities')).json().activities;
       assert.ok(!activities.some((a: { name: string }) => a.name === 'Promedio'));

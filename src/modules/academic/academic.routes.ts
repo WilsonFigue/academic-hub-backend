@@ -46,6 +46,40 @@ export async function academicRoutes(app: FastifyInstance, { db, repo, authRepo 
     return { user: user ? toPublicUser(user) : null };
   });
 
+  // Preferencias de interfaz del propio usuario. Solo claves conocidas y con forma validada.
+  const COLUMN_KEYS = ['pending', 'overdue', 'submitted', 'graded', 'nodate'] as const;
+  const PREFERENCE_KEYS = ['activities_board'] as const;
+  type PreferenceKey = (typeof PREFERENCE_KEYS)[number];
+  const keyParam = { type: 'object', required: ['key'], additionalProperties: false, properties: { key: { type: 'string', enum: [...PREFERENCE_KEYS] } } } as const;
+  const uniqueColumns = (value: unknown): string[] => (Array.isArray(value) ? [...new Set(value.filter((v): v is string => (COLUMN_KEYS as readonly string[]).includes(v)))] : []);
+  function sanitizePreference(key: PreferenceKey, value: Record<string, unknown>) {
+    // activities_board: orden completo de columnas, minimizadas (a un lado) y cerradas (ocultas).
+    const order = uniqueColumns(value.order);
+    for (const column of COLUMN_KEYS) if (!order.includes(column)) order.push(column);
+    return { order, minimized: uniqueColumns(value.minimized), hidden: uniqueColumns(value.hidden) };
+  }
+
+  app.get<{ Params: { key: PreferenceKey } }>('/me/preferences/:key', { preHandler: auth, schema: { tags: ['users'], params: keyParam } }, async (request) => {
+    const { rows } = await db.query<{ value: Record<string, unknown> }>('SELECT value FROM user_preferences WHERE user_id = $1 AND key = $2', [userId(request), request.params.key]);
+    return { key: request.params.key, value: rows[0] ? sanitizePreference(request.params.key, rows[0].value) : null };
+  });
+
+  app.put<{ Params: { key: PreferenceKey }; Body: { value: Record<string, unknown> } }>('/me/preferences/:key', {
+    preHandler: auth,
+    schema: {
+      tags: ['users'], params: keyParam,
+      body: { type: 'object', additionalProperties: false, required: ['value'], properties: { value: { type: 'object', additionalProperties: true } } },
+    },
+  }, async (request) => {
+    const value = sanitizePreference(request.params.key, request.body.value);
+    await db.query(
+      `INSERT INTO user_preferences (user_id, key, value) VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value`,
+      [userId(request), request.params.key, JSON.stringify(value)],
+    );
+    return { key: request.params.key, value };
+  });
+
   app.get('/institutions', { preHandler: auth, schema: { tags: ['institutions'] } }, async () => ({ institutions: await repo.institutions() }));
 
   app.get('/me/university-accounts', { preHandler: auth, schema: { tags: ['university-accounts'] } }, async (request) => ({
