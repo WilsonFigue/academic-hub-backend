@@ -54,6 +54,14 @@ export interface DevImportOptions {
 }
 
 export async function devImportRoutes(app: FastifyInstance, { db, operatorToken, passingGradePct = null, credentialsKey = null, scheduledLoginVisible = false, guideGenerator = notConfiguredGenerator, guidePolicy }: DevImportOptions): Promise<void> {
+  /** Tras cada actualización: encola las guías de las materias activadas y las procesa en segundo plano (sin retrasar la actualización). */
+  const guidesAfterRefresh = async (userId: string) => {
+    try {
+      await enqueueRoutine(db, guidePolicy, { userId });
+      void processQueue(db, guideGenerator, guidePolicy).catch(() => {});
+    } catch { /* las guías nunca detienen una actualización */ }
+  };
+
   const operations = new Map<string, Operation>();
   const tokenHash = sha256(operatorToken);
   let running: string | null = null;
@@ -140,7 +148,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
           mode, passingGradePct, onIdentity: async (accountId) => { await dispatchReviewMarks(db, accountId, (course, content, reviewed) => session.markReviewed(course, content, reviewed)); },
         });
         await applyCalendar(db, { userId: summary.user.id }).catch(() => {});
-        await enqueueRoutine(db, guidePolicy, { userId: summary.user.id }).catch(() => {});
+        await guidesAfterRefresh(summary.user.id);
         const { temporaryPassword, ...rest } = summary;
         if (toRemember && credentialsKey) {
           const account = await db.query<{ id: string }>(`SELECT id FROM external_accounts WHERE user_id = $1 AND link_status <> 'revoked' ORDER BY created_at LIMIT 1`, [summary.user.id]);
@@ -189,7 +197,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
         });
         changes = summary.sync.changesRecorded;
         await applyCalendar(db, { userId: summary.user.id }).catch(() => {});
-        await enqueueRoutine(db, guidePolicy, { userId: summary.user.id }).catch(() => {});
+        await guidesAfterRefresh(summary.user.id);
       } catch (error) {
         errorCode = error instanceof ImportError || error instanceof LoginError ? error.code : error instanceof SessionExpiredError ? 'blackboard_session_expired' : 'import_failed';
         if (!(error instanceof ImportError || error instanceof LoginError || error instanceof SessionExpiredError)) app.log.error({ err: { name: (error as Error)?.name } }, 'scheduled refresh failed');
