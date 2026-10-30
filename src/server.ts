@@ -34,6 +34,9 @@ async function main(): Promise<void> {
   const forumSuggester = config.openaiApiKey && db
     ? createForumSuggester({ apiKey: config.openaiApiKey, model: config.homeworkModel, priceInPerM: config.homeworkPriceInPerM, priceOutPerM: config.homeworkPriceOutPerM, reasoningEffort: 'low', db })
     : undefined;
+  // Correo de resumen (Mailchimp): sin llave no se envía nada.
+  const { createMailchimpMailer, notConfiguredMailer } = await import('./modules/notifications/mailer.js');
+  const mailer = config.mailchimpApiKey ? createMailchimpMailer({ apiKey: config.mailchimpApiKey, listId: config.mailchimpListId, fromName: config.mailFromName }) : notConfiguredMailer;
   const app = await buildApp({
     config,
     db,
@@ -47,6 +50,8 @@ async function main(): Promise<void> {
           const { devImportRoutes } = await import('./modules/import/dev-import.routes.js');
           await instance.register(devImportRoutes, { db: db!, operatorToken: config.devOperatorToken!, passingGradePct: config.passingGradePct,
             credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible, guideGenerator, guidePolicy, homeworkGenerator, homeworkPolicy });
+          const { emailRoutes } = await import('./modules/notifications/email.routes.js');
+          await instance.register(emailRoutes, { db: db!, operatorToken: config.devOperatorToken!, mailer, capUsd: config.homeworkMonthlyCapUsd });
         }
       : undefined,
   });

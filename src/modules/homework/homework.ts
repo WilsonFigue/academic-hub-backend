@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import type { Database, Queryable } from '../../database/connection.js';
 import { notFound } from '../../shared/errors.js';
 import { classifyActivity } from './eligibility.js';
+import { notifyHomeworkReady } from '../notifications/notifications.js';
 import { aiSpend, logAiUsage, monthStart, nextMonthStart } from '../logs/logs.js';
 
 export interface Deliverable { name: string; kind: 'pdf' | 'docx' | 'xlsx' | 'ggb'; bytes: number }
@@ -247,6 +248,7 @@ async function processLocked(db: Database, generator: HomeworkGenerator, policy:
         `UPDATE homework_runs SET status = 'ready', deliverables = $2, summary = $3, report = $4, model = $5, input_tokens = $6, output_tokens = $7, cost_usd = $8, error_code = NULL, finished_at = now() WHERE id = $1`,
         [row.id, JSON.stringify(result.deliverables), result.summary, JSON.stringify(result.report), result.model, result.inputTokens, result.outputTokens, result.costUsd]);
       summary.ready += 1;
+      await notifyHomeworkReady(db, row.id).catch(() => {});
       await logAiUsage(db, { event: 'run_finished', feature: 'homework', runId: row.id, enrollmentId: row.enrollment_id, courseId: row.course_id, gradebookColumnId: row.gradebook_column_id, model: result.model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: 0, status: 'ok',
         message: `Tarea lista: ${result.deliverables.length} archivo(s), ${result.report.turns} turno(s), USD ${result.costUsd.toFixed(4)}.`, detail: { totalCostUsd: result.costUsd, budgetUsd, deliverables: result.deliverables, tools: result.report.tools, warnings: result.report.warnings, placeholders: result.report.placeholders.length } });
     } catch (error) {

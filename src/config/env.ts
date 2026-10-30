@@ -31,6 +31,10 @@ export interface AppConfig {
   scheduledLoginVisible: boolean;
   /** Clave de la API de OpenAI para las guías de estudio; sin ella las solicitudes quedan en cola y nada sale del equipo. */
   openaiApiKey: string | null;
+  /** Mailchimp (API normal, llave con sufijo -usNN): correos de resumen. Sin ella no se envía nada. */
+  mailchimpApiKey: string | null;
+  mailchimpListId: string | null;
+  mailFromName: string;
   openaiModel: string;
   /** Precios en USD por millón de tokens (para calcular el costo de cada guía y respetar el tope mensual). */
   openaiPriceInPerM: number;
@@ -227,6 +231,9 @@ export function readConfig(): AppConfig {
     credentialsKey: credentialsKey(problems),
     scheduledLoginVisible: bool('SCHEDULED_LOGIN_VISIBLE', false, problems),
     openaiApiKey: (process.env.OPENAI_API_KEY ?? '').trim() || null,
+    mailchimpApiKey: (process.env.MAILCHIMP_API_KEY ?? process.env.MAILCHIMP_TRANSACTIONAL_API_KEY ?? '').trim() || null,
+    mailchimpListId: (process.env.MAILCHIMP_LIST_ID ?? '').trim() || null,
+    mailFromName: (process.env.MAIL_FROM_NAME ?? 'Academic Hub').trim() || 'Academic Hub',
     openaiModel: (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
     openaiPriceInPerM: decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems),
     openaiPriceOutPerM: decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems),

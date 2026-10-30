@@ -5,6 +5,7 @@ import { generateTemporaryPassword } from '../../shared/crypto.js';
 import { hashPassword } from '../auth/password.js';
 import { isObject, str, type BlackboardGateway, type Json, type ReadResult } from '../blackboard/gateway.js';
 import { columnChanges, gradeChanges, recordChange } from './changes.js';
+import { notifyFromRun } from '../notifications/notifications.js';
 import { attemptIds, toDate, toNumber } from './normalize.js';
 import {
   newCounters, upsertAnnouncement, upsertAttempt, upsertSignals, upsertCalendarItem, upsertColumn, upsertContent, upsertCourse, upsertEnrollment,
@@ -447,6 +448,8 @@ export async function importStudent(
   const incompleteSteps = steps.filter((step) => !step.read.complete).map((step) => ({ resource: step.resource, errorCode: step.read.errorCode }));
   const status = incompleteSteps.length === 0 ? 'succeeded' : 'partial';
   await finishRun(db, runId, steps, status, null, { ...academicData, changesRecorded, baseline: baseline ? 1 : 0 }, rows);
+  // Las novedades de esta importación se vuelven avisos de la campana; un fallo aquí nunca debe tumbar la importación.
+  if (changesRecorded > 0) await notifyFromRun(db, runId).catch(() => 0);
   return {
     mode, skippedClosed, history,
     user: { id: identity.user.id, username: identity.user.username, email: identity.user.email, displayName: identity.user.display_name },

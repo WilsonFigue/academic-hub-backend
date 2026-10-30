@@ -13,6 +13,7 @@ import { createAuthService } from './modules/auth/auth.service.js';
 import { guidesRoutes } from './modules/guides/guides.routes.js';
 import { homeworkRoutes } from './modules/homework/homework.routes.js';
 import { forumsRoutes } from './modules/forums/forums.routes.js';
+import { notificationsRoutes } from './modules/notifications/notifications.routes.js';
 import { notConfiguredSuggester, type ForumSuggester } from './modules/forums/suggest.js';
 import { notConfiguredGenerator, type GuideGenerator, type GuidePolicy } from './modules/guides/guides.js';
 import { filesRoutes } from './modules/files/files.routes.js';
@@ -140,6 +141,7 @@ export async function buildApp({ config, db, logger = true, registerInternal, bl
     await api.register(guidesRoutes, { db, generator: guideGenerator, policy: guidePolicy, webOrigin: config.frontendOrigin });
     await api.register(homeworkRoutes, { db });
     await api.register(forumsRoutes, { db, sessions: blackboardSessions, suggester: forumSuggester, capUsd: forumCapUsd });
+    await api.register(notificationsRoutes, { db });
   }, { prefix: '/api/v1' });
 
   if (registerInternal) await registerInternal(app);

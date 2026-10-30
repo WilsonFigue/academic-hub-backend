@@ -8,6 +8,7 @@
 //  4. Salvaguardas: tope de guías por corrida y tope de gasto mensual.
 import type { Database, Queryable } from '../../database/connection.js';
 import { HttpError, notFound } from '../../shared/errors.js';
+import { notifyGuideReady } from '../notifications/notifications.js';
 import { detectTools } from './tools.js';
 
 export interface GuideContent {
@@ -209,6 +210,7 @@ export async function processQueue(db: Database, generator: GuideGenerator, poli
         `UPDATE study_guides SET status = 'ready', content = $2, model = $3, input_tokens = $4, output_tokens = $5, cost_usd = $6, error_code = NULL, finished_at = now() WHERE id = $1`,
         [row.id, JSON.stringify(result.content), result.model, result.inputTokens, result.outputTokens, result.costUsd]);
       summary.ready += 1;
+      await notifyGuideReady(db, row.id).catch(() => {});
     } catch (error) {
       await db.query(`UPDATE study_guides SET status = 'failed', error_code = $2, finished_at = now() WHERE id = $1`, [row.id, error instanceof GuideError ? error.code : 'generation_failed']);
       summary.failed += 1;
