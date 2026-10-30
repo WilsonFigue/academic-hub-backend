@@ -6,7 +6,7 @@ import type { BlackboardSessions } from '../files/sessions.js';
 import { createFileStore } from '../files/store.js';
 import { gatherMaterial } from '../guides/material.js';
 import { monthlySpend } from '../homework/homework.js';
-import { readClassmatePosts, readForumInfo, readPrompt, resolveForum, resolveForumByContent, saveSuggestion, savedSuggestion, type ClassmatePost, type ForumRef } from './forums.js';
+import { hasParticipated, readClassmatePosts, readForumInfo, readPrompt, resolveForum, resolveForumByContent, saveSuggestion, savedSuggestion, type ClassmatePost, type ForumRef } from './forums.js';
 import { SuggestError, type ForumSuggester } from './suggest.js';
 
 const uuidParam = { type: 'object', required: ['id'], additionalProperties: false, properties: { id: { type: 'string', format: 'uuid' } } } as const;
@@ -63,7 +63,7 @@ export async function forumsRoutes(app: FastifyInstance, { db, sessions, suggest
   // Desde una actividad.
   app.get<{ Params: { id: string } }>('/activities/:id/forum', { preHandler: auth, schema: { tags: ['forums'], params: uuidParam } }, async (request) => {
     const ref = await resolveForum(db, userId(request), request.params.id);
-    return ref ? state(ref) : { isForum: false };
+    return ref ? { ...(await state(ref)), participated: ref.submitted === true ? true : ref.columnId ? false : null } : { isForum: false };
   });
   app.post<{ Params: { id: string }; Body: SuggestBody }>('/activities/:id/forum/suggestion', { preHandler: auth, schema: { tags: ['forums'], params: uuidParam, body: suggestionBody } }, async (request) => {
     const ref = await resolveForum(db, userId(request), request.params.id);
@@ -81,8 +81,8 @@ export async function forumsRoutes(app: FastifyInstance, { db, sessions, suggest
       promptStatus = live.status;
       if (live.text) ref.cachedPrompt = live.text;
     }
-    const info = await readForumInfo(sessions, ref);
-    return { ...(await state(ref)), promptStatus, availability: info };
+    const [info, participated] = await Promise.all([readForumInfo(sessions, ref), hasParticipated(sessions, ref)]);
+    return { ...(await state(ref)), promptStatus, availability: info, participated };
   });
   app.post<{ Params: { courseId: string; contentId: string }; Body: SuggestBody }>('/courses/:courseId/content/:contentId/forum/suggestion', {
     preHandler: auth, schema: { tags: ['forums'], params: contentParams, body: suggestionBody },

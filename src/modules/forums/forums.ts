@@ -11,7 +11,7 @@ export const FORUM_HANDLER = 'resource/x-bb-forumlink';
 
 export interface ForumRef {
   enrollmentId: string; courseId: string; columnId: string | null; contentExternalId: string; accountId: string; courseExternalId: string; forumId: string;
-  title: string; dueAt: string | null; instructorName: string | null; contentId: string; cachedPrompt: string | null; ownGiven: string | null; ownFamily: string | null;
+  title: string; dueAt: string | null; instructorName: string | null; contentId: string; cachedPrompt: string | null; submitted: boolean | null; ownGiven: string | null; ownFamily: string | null;
 }
 export interface ClassmatePost { given: string; full: string; text: string }
 export type PromptStatus = 'ok' | 'forbidden' | 'empty' | 'no_session' | 'error';
@@ -37,11 +37,11 @@ const nameMatches = (given: unknown, family: unknown, full: string | null) => {
 
 type Row = {
   enrollment_id: string; course_id: string; column_id: string | null; account_id: string; course_external_id: string; forum_id: string | null; name: string; due: Date | null;
-  instructor_name: string | null; content_id: string; content_external_id: string; body_text: string | null; given_name: string | null; family_name: string | null;
+  instructor_name: string | null; content_id: string; content_external_id: string; body_text: string | null; submitted: boolean | null; given_name: string | null; family_name: string | null;
 };
 const toRef = (r: Row): ForumRef | null => r.forum_id ? {
   enrollmentId: r.enrollment_id, courseId: r.course_id, columnId: r.column_id, contentExternalId: r.content_external_id, accountId: r.account_id, courseExternalId: r.course_external_id, forumId: r.forum_id, title: r.name,
-  dueAt: r.due ? new Date(r.due).toISOString() : null, instructorName: r.instructor_name, contentId: r.content_id, cachedPrompt: r.body_text?.trim() || null, ownGiven: r.given_name, ownFamily: r.family_name,
+  dueAt: r.due ? new Date(r.due).toISOString() : null, instructorName: r.instructor_name, contentId: r.content_id, cachedPrompt: r.body_text?.trim() || null, submitted: r.submitted, ownGiven: r.given_name, ownFamily: r.family_name,
 } : null;
 
 export interface ForumInfo { available: boolean; windows: Array<{ start: string | null; end: string | null }> }
@@ -65,7 +65,7 @@ export async function resolveForumByContent(db: Database, userId: string, course
   const { rows } = await db.query<Row>(
     `SELECT ce.id AS enrollment_id, ci.course_id, gc.id AS column_id, ea.id AS account_id, c.external_id AS course_external_id, ci.content_detail->>'id' AS forum_id,
             COALESCE(gc.name, ci.title) AS name, COALESCE(sg.effective_due_at, gc.due_at, ci.due_at) AS due, c.instructor_name, ci.id AS content_id, ci.external_id AS content_external_id,
-            ci.body_text, ea.given_name, ea.family_name
+            ci.body_text, (sg.is_submitted IS TRUE OR EXISTS (SELECT 1 FROM grade_attempts a WHERE a.student_grade_id = sg.id AND a.status <> 'IN_PROGRESS')) AS submitted, ea.given_name, ea.family_name
        FROM course_enrollments ce
        JOIN external_accounts ea ON ea.id = ce.external_account_id AND ea.user_id = $1 AND ea.link_status <> 'revoked'
        JOIN enrollment_content_visibility v ON v.enrollment_id = ce.id AND v.missing_since IS NULL
@@ -81,7 +81,7 @@ export async function resolveForumByContent(db: Database, userId: string, course
 export async function resolveForum(db: Database, userId: string, activityId: string): Promise<ForumRef | null> {
   const { rows } = await db.query<Row>(
     `SELECT sg.enrollment_id, sg.course_id, sg.gradebook_column_id AS column_id, ea.id AS account_id, c.external_id AS course_external_id, ci.content_detail->>'id' AS forum_id,
-            gc.name, COALESCE(sg.effective_due_at, gc.due_at) AS due, c.instructor_name, ci.id AS content_id, ci.external_id AS content_external_id, ci.body_text, ea.given_name, ea.family_name
+            gc.name, COALESCE(sg.effective_due_at, gc.due_at) AS due, c.instructor_name, ci.id AS content_id, ci.external_id AS content_external_id, ci.body_text, (sg.is_submitted IS TRUE OR EXISTS (SELECT 1 FROM grade_attempts a WHERE a.student_grade_id = sg.id AND a.status <> 'IN_PROGRESS')) AS submitted, ea.given_name, ea.family_name
        FROM student_grades sg
        JOIN course_enrollments ce ON ce.id = sg.enrollment_id
        JOIN external_accounts ea ON ea.id = ce.external_account_id
@@ -133,6 +133,29 @@ export async function readClassmatePosts(sessions: BlackboardSessions | null, re
       .sort((a, b) => String(b.m.postDate ?? b.m.createdDate ?? '').localeCompare(String(a.m.postDate ?? a.m.createdDate ?? '')));
     return replies.slice(0, limit).map(({ m, text }) => ({ given: firstName(m.givenName), full: fullName(m.givenName, m.familyName), text: text.slice(0, 1_500) }));
   } catch { return []; }
+}
+
+/**
+ * ¿Ya participaste en este foro? Con nota: lo dice Blackboard (entrega registrada). Sin nota: se busca tu nombre entre los mensajes del foro
+ * (solo lectura). null = no se pudo saber (p. ej. el foro está bloqueado para leerlo).
+ */
+export async function hasParticipated(sessions: BlackboardSessions | null, ref: ForumRef): Promise<boolean | null> {
+  if (ref.submitted === true) return true;
+  if (ref.columnId && ref.submitted === false) return false;
+  if (!sessions || !ref.ownGiven || !ref.ownFamily) return null;
+  try {
+    const session = await sessions.acquire(ref.accountId);
+    const list = await session.transport.get(base(ref), { limit: '100' });
+    if (list.status !== 200) return null;
+    const top = ((list.body as { results?: Message[] } | null)?.results ?? []).filter((m) => !m.parentId);
+    const own = (m: Message) => nameMatches(m.givenName, m.familyName, `${ref.ownGiven} ${ref.ownFamily}`);
+    if (top.some(own)) return true;
+    const teacher = top.find((m) => nameMatches(m.givenName, m.familyName, ref.instructorName)) ?? (ref.instructorName ? undefined : top[0]);
+    if (!teacher?.id) return false;
+    const replies = await session.transport.get(`${base(ref)}/${teacher.id}/replies`, { limit: '100' });
+    if (replies.status !== 200) return null;
+    return ((replies.body as { results?: Message[] } | null)?.results ?? []).some(own);
+  } catch { return null; }
 }
 
 export interface SavedSuggestion { postText: string; replies: Array<{ to: string; full?: string; text: string }>; promptSource: 'teacher_post' | 'pasted' | 'title_only'; model: string | null; costUsd: number | null; updatedAt: string }

@@ -133,6 +133,7 @@ describe('foros: consigna, participaciones y sugerencia con botón (PostgreSQL r
     assert.equal(open.statusCode, 200);
     const body = open.json();
     assert.equal(body.isForum, true); assert.equal(body.graded, false);
+    assert.equal(body.participated, true, 'un foro sin nota: se detecta tu respuesta por tu nombre entre los mensajes');
     assert.ok(body.prompt.includes('150 a 200 palabras'), 'al abrir se lee la consigna del docente');
     const made = await alice.request('POST', `/api/v1/courses/${ids.course}/content/${content}/forum/suggestion`, {});
     assert.equal(made.statusCode, 200);
@@ -141,7 +142,16 @@ describe('foros: consigna, participaciones y sugerencia con botón (PostgreSQL r
     // El foro con nota comparte la misma sugerencia desde la actividad y desde el contenido.
     await ctx.db.query(`INSERT INTO enrollment_content_visibility (enrollment_id, content_item_id, course_id, visibility) VALUES ($1, $2, $3, 'VISIBLE')`, [ids.enrollA, ids.f1.content, ids.course]);
     const viaContent = (await alice.request('GET', `/api/v1/courses/${ids.course}/content/${ids.f1.content}/forum`)).json();
-    assert.equal(viaContent.graded, true); assert.equal(viaContent.suggestion.postText, 'Mi participación de ejemplo.');
+    assert.equal(viaContent.graded, true); assert.equal(viaContent.participated, false, 'con nota y sin entrega registrada: aún no participaste'); assert.equal(viaContent.suggestion.postText, 'Mi participación de ejemplo.');
+  });
+
+  test('foro con entrega registrada en Blackboard: ya participaste; foro bloqueado sin dato: no se sabe', async () => {
+    const done = await forumColumn(ids.enrollA, ids.course, 'F7', 'Foro ya respondido');
+    await ctx.db.query(`UPDATE student_grades SET is_submitted = true WHERE id = $1`, [done.activity]);
+    assert.equal((await alice.request('GET', `/api/v1/activities/${done.activity}/forum`)).json().participated, true);
+    await ctx.db.query(`INSERT INTO enrollment_content_visibility (enrollment_id, content_item_id, course_id, visibility) VALUES ($1, $2, $3, 'VISIBLE')`, [ids.enrollA, ids.f403.content, ids.course]);
+    // El foro 403 tiene nota y no hay entrega: aún no participaste.
+    assert.equal((await alice.request('GET', `/api/v1/courses/${ids.course}/content/${ids.f403.content}/forum`)).json().participated, false);
   });
 
   test('con el tope mensual agotado no se llama a la IA', async () => {
