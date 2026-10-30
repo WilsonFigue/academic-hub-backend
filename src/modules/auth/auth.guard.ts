@@ -51,15 +51,22 @@ export function assertAllowedOrigin(request: FastifyRequest, config: AppConfig):
 const TOUCH_INTERVAL_MS = 5 * 60_000;
 
 /** Carga la sesión desde la cookie (sin exigirla). */
-export function createSessionLoader(repo: AuthRepository) {
-  return async function loadSession(request: FastifyRequest): Promise<void> {
+/** Devuelve la nueva fecha de vencimiento cuando la sesión se renovó (para renovar también las cookies), o null. */
+export function createSessionLoader(repo: AuthRepository, ttlMs: number) {
+  return async function loadSession(request: FastifyRequest): Promise<Date | null> {
     request.auth = null;
     const token = request.cookies[SESSION_COOKIE];
-    if (!token || token.length > 100) return;
+    if (!token || token.length > 100) return null;
     const session = await repo.findActiveSession(sha256(token));
-    if (!session) return;
+    if (!session) return null;
     request.auth = session;
-    if (Date.now() - session.last_used_at.getTime() > TOUCH_INTERVAL_MS) await repo.touchSession(session.session_id);
+    // Sesión deslizante: mientras la uses se renueva; solo vence si pasas todo el plazo sin entrar.
+    if (Date.now() - session.last_used_at.getTime() > TOUCH_INTERVAL_MS) {
+      const expiresAt = new Date(Date.now() + ttlMs);
+      await repo.touchSession(session.session_id, expiresAt);
+      return expiresAt;
+    }
+    return null;
   };
 }
 

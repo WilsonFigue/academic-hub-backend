@@ -6,12 +6,14 @@ import type { AppConfig } from './config/env.js';
 import { DatabaseError, type Database } from './database/connection.js';
 import { createAcademicRepository } from './modules/academic/academic.repository.js';
 import { academicRoutes } from './modules/academic/academic.routes.js';
-import { assertAllowedOrigin, createSessionLoader } from './modules/auth/auth.guard.js';
+import { CSRF_COOKIE, SESSION_COOKIE, assertAllowedOrigin, createSessionLoader, setSessionCookies } from './modules/auth/auth.guard.js';
 import { createAuthRepository } from './modules/auth/auth.repository.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { createAuthService } from './modules/auth/auth.service.js';
 import { guidesRoutes } from './modules/guides/guides.routes.js';
 import { homeworkRoutes } from './modules/homework/homework.routes.js';
+import { forumsRoutes } from './modules/forums/forums.routes.js';
+import { notConfiguredSuggester, type ForumSuggester } from './modules/forums/suggest.js';
 import { notConfiguredGenerator, type GuideGenerator, type GuidePolicy } from './modules/guides/guides.js';
 import { filesRoutes } from './modules/files/files.routes.js';
 import type { BlackboardSessions } from './modules/files/sessions.js';
@@ -32,9 +34,13 @@ export interface BuildAppOptions {
   guideGenerator?: GuideGenerator;
   /** Topes de las guías de estudio (gasto mensual, guías por corrida). */
   guidePolicy?: GuidePolicy;
+  /** Sugerencias de respuesta para foros (botón del estudiante). Sin él, el botón avisa que la IA no está conectada. */
+  forumSuggester?: ForumSuggester;
+  /** Tope mensual (USD) de gasto en IA para tareas; las sugerencias de foro cuentan en él. */
+  forumCapUsd?: number;
 }
 
-export async function buildApp({ config, db, logger = true, registerInternal, blackboardSessions = null, guideGenerator = notConfiguredGenerator, guidePolicy }: BuildAppOptions): Promise<FastifyInstance> {
+export async function buildApp({ config, db, logger = true, registerInternal, blackboardSessions = null, guideGenerator = notConfiguredGenerator, guidePolicy, forumSuggester = notConfiguredSuggester, forumCapUsd = 10 }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger
       ? {
@@ -119,17 +125,21 @@ export async function buildApp({ config, db, logger = true, registerInternal, bl
     }
     const authRepo = createAuthRepository(db);
     const authService = createAuthService(db, authRepo, config);
-    const loadSession = createSessionLoader(authRepo);
+    const loadSession = createSessionLoader(authRepo, config.sessionTtlDays * 86_400_000);
     api.decorateRequest('auth', null);
-    api.addHook('onRequest', async (request) => {
+    api.addHook('onRequest', async (request, reply) => {
       assertAllowedOrigin(request, config);
-      await loadSession(request);
+      const renewed = await loadSession(request);
+      // Renueva también las cookies del navegador para que no venzan mientras se usa la app.
+      const token = request.cookies[SESSION_COOKIE]; const csrf = request.cookies[CSRF_COOKIE];
+      if (renewed && token && csrf) setSessionCookies(reply, config, { token, csrfToken: csrf, expiresAt: renewed });
     });
     await api.register(authRoutes, { config, service: authService, repo: authRepo });
     await api.register(academicRoutes, { db, repo: createAcademicRepository(db), authRepo });
     await api.register(filesRoutes, { db, sessions: blackboardSessions });
     await api.register(guidesRoutes, { db, generator: guideGenerator, policy: guidePolicy, webOrigin: config.frontendOrigin });
     await api.register(homeworkRoutes, { db });
+    await api.register(forumsRoutes, { db, sessions: blackboardSessions, suggester: forumSuggester, capUsd: forumCapUsd });
   }, { prefix: '/api/v1' });
 
   if (registerInternal) await registerInternal(app);

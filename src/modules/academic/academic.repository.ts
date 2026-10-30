@@ -1,3 +1,4 @@
+import { deferredRulings, type GradedRow } from './deferred.js';
 import type { Database } from '../../database/connection.js';
 
 // Todas las consultas parten del usuario autenticado: users → external_accounts → course_enrollments.
@@ -12,6 +13,10 @@ const OWN_ENROLLMENTS = `
 // Vencimiento efectivo: personal (excepción/pendiente) o el de la columna.
 const EFFECTIVE_DUE = 'COALESCE(sg.effective_due_at, gc.due_at)';
 const IS_ACTIVITY = 'NOT gc.is_calculated AND NOT gc.is_deleted_at_source AND gc.removed_at_source IS NULL AND sg.is_visible_to_student';
+
+interface ActivityFilter { courseId?: string; from?: Date; to?: Date; status?: 'pending' | 'submitted' | 'graded'; activityId?: string; includeCalculated?: boolean; termId?: string }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ActivityRow = Record<string, any> & { id: string };
 
 export function createAcademicRepository(db: Database) {
   return {
@@ -120,9 +125,15 @@ export function createAcademicRepository(db: Database) {
       return rows;
     },
 
-    async activities(userId: string, filter: {
-      courseId?: string; from?: Date; to?: Date; status?: 'pending' | 'submitted' | 'graded'; activityId?: string; includeCalculated?: boolean; termId?: string;
-    } = {}) {
+    /** Actividades con la marca de si cuentan para la nota (los diferidos no deben bajar el promedio si hiciste el ordinario). */
+    async activities(userId: string, filter: ActivityFilter = {}): Promise<ActivityRow[]> {
+      const rows = await this.activitiesRaw(userId, filter);
+      const all = filter.courseId || filter.status || filter.activityId || filter.from || filter.to || filter.termId || !filter.includeCalculated ? await this.activitiesRaw(userId, { includeCalculated: true }) : rows;
+      const rulings = deferredRulings(all as unknown as GradedRow[]);
+      return rows.map((row) => ({ ...row, countsInGrade: rulings.get(row.id)?.countsInGrade ?? true, gradeNote: rulings.get(row.id)?.gradeNote ?? null }));
+    },
+
+    async activitiesRaw(userId: string, filter: ActivityFilter = {}): Promise<ActivityRow[]> {
       const { rows } = await db.query(
         `WITH own AS (${OWN_ENROLLMENTS})
          SELECT sg.id, gc.name, gc.effective_name AS "effectiveName", c.id AS "courseId", c.name AS "courseName",
@@ -168,7 +179,7 @@ export function createAcademicRepository(db: Database) {
         [userId, filter.courseId ?? null, filter.from ?? null, filter.to ?? null, filter.activityId ?? null,
          filter.status ?? null, new Date(), 1000, filter.includeCalculated ?? false, filter.termId ?? null],
       );
-      return rows;
+      return rows as ActivityRow[];
     },
 
     async attempts(userId: string, studentGradeId: string) {
@@ -312,13 +323,14 @@ export function createAcademicRepository(db: Database) {
           `SELECT number, exam_start::text AS "examStart", exam_end::text AS "examEnd", deferred_start::text AS "deferredStart", deferred_end::text AS "deferredEnd"
              FROM institution_evaluations WHERE term_id = $1 ORDER BY number`, [term.id]);
         const current = (evaluations.rows.find((e) => term.today <= e.examEnd) ?? evaluations.rows[evaluations.rows.length - 1])?.number ?? null;
+        const skipped = [...deferredRulings((await this.activitiesRaw(userId, { includeCalculated: true })) as unknown as GradedRow[])].filter(([, r]) => !r.countsInGrade).map(([id]) => id);
         const stats = await db.query<{ courseId: string; name: string; number: number; total: number; graded: number; earned: string | null; possible: string | null }>(
           `WITH own AS (${OWN_ENROLLMENTS})
            SELECT c.id AS "courseId", c.name, ec.number,
                   count(*) FILTER (WHERE ${IS_ACTIVITY})::int AS total,
-                  count(*) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL)::int AS graded,
-                  sum(sg.score) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL) AS earned,
-                  sum(COALESCE(sg.points_possible, gc.points_possible)) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL) AS possible
+                  count(*) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL AND sg.id <> ALL($3::uuid[]))::int AS graded,
+                  sum(sg.score) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL AND sg.id <> ALL($3::uuid[])) AS earned,
+                  sum(COALESCE(sg.points_possible, gc.points_possible)) FILTER (WHERE ${IS_ACTIVITY} AND sg.score IS NOT NULL AND sg.id <> ALL($3::uuid[])) AS possible
              FROM own
              JOIN courses c ON c.id = own.course_id
              JOIN academic_terms t ON t.id = c.term_id
@@ -327,7 +339,7 @@ export function createAcademicRepository(db: Database) {
              LEFT JOIN evaluation_cycle_items i ON i.cycle_id = ec.id
              LEFT JOIN student_grades sg ON sg.enrollment_id = i.enrollment_id AND sg.gradebook_column_id = i.gradebook_column_id
              LEFT JOIN gradebook_columns gc ON gc.id = sg.gradebook_column_id
-            GROUP BY c.id, c.name, ec.number ORDER BY c.name, ec.number`, [userId, term.id]);
+            GROUP BY c.id, c.name, ec.number ORDER BY c.name, ec.number`, [userId, term.id, skipped]);
         const weight = Number(term.weight); const passing = Number(term.passing);
         const pointsPerEvaluation = (weight / 100) * 10;
         const courses = new Map<string, { courseId: string; name: string; evaluations: Array<Record<string, unknown>> }>();

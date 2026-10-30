@@ -30,12 +30,18 @@ async function main(): Promise<void> {
     ? createHomeworkGenerator({ apiKey: config.openaiApiKey, model: config.homeworkModel, priceInPerM: config.homeworkPriceInPerM, priceOutPerM: config.homeworkPriceOutPerM,
         maxInputChars: config.studyGuideMaxInputChars, maxPerTaskUsd: config.homeworkMaxPerTaskUsd, maxTurns: config.homeworkMaxTurns, reasoningEffort: config.homeworkReasoning, db, store: createFileStore(sessions), outDir: HOMEWORK_DIR })
     : undefined;
+  const { createForumSuggester } = await import('./modules/forums/suggest.js');
+  const forumSuggester = config.openaiApiKey && db
+    ? createForumSuggester({ apiKey: config.openaiApiKey, model: config.homeworkModel, priceInPerM: config.homeworkPriceInPerM, priceOutPerM: config.homeworkPriceOutPerM, reasoningEffort: 'low', db })
+    : undefined;
   const app = await buildApp({
     config,
     db,
     blackboardSessions: sessions,
     guideGenerator,
     guidePolicy,
+    forumSuggester,
+    forumCapUsd: config.homeworkMonthlyCapUsd,
     registerInternal: internalEnabled
       ? async (instance) => {
           const { devImportRoutes } = await import('./modules/import/dev-import.routes.js');

@@ -78,8 +78,8 @@ export function createAuthRepository(db: Database) {
       return rows[0] ?? null;
     },
 
-    async touchSession(sessionId: string): Promise<void> {
-      await db.query(`UPDATE auth_sessions SET last_used_at = now() WHERE id = $1`, [sessionId]);
+    async touchSession(sessionId: string, expiresAt: Date): Promise<void> {
+      await db.query(`UPDATE auth_sessions SET last_used_at = now(), expires_at = GREATEST(expires_at, $2) WHERE id = $1`, [sessionId, expiresAt]);
     },
 
     async revokeSession(sessionId: string, reason: string): Promise<void> {

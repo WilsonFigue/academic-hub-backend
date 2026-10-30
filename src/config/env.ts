@@ -218,7 +218,7 @@ export function readConfig(): AppConfig {
     dbSslMode: sslMode(nodeEnv, problems),
     dbSchema,
     frontendOrigin,
-    sessionTtlDays: int('SESSION_TTL_DAYS', 7, 1, 90, problems),
+    sessionTtlDays: int('SESSION_TTL_DAYS', 30, 1, 90, problems),
     cookieSecure,
     cookieSameSite,
     blackboardReadOnly: bool('BLACKBOARD_READ_ONLY', true, problems),
