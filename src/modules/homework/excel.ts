@@ -50,7 +50,7 @@ export async function buildWorkbook(spec: WorkbookSpec): Promise<WorkbookResult>
 
   // 2) Libro de Excel con estilos y resultados guardados.
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'Academic Hub (borrador con IA)';
+  wb.creator = '';
   const computed: Record<string, string | number | boolean> = {}; const errors: string[] = []; let formulas = 0;
   sheets.forEach((sheet, i) => {
     const name = names[i]!; const sheetId = hf.getSheetId(name)!;

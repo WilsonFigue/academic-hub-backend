@@ -39,6 +39,12 @@ export interface AppConfig {
   studyGuideMaxPerRun: number;
   /** Tope de caracteres de material que se envía por guía (~3.5 caracteres por token). */
   studyGuideMaxInputChars: number;
+  /** Modelo, precios y razonamiento de las guías de estudio. Sin valores usan los de OPENAI_*. */
+  studyGuideModel: string;
+  studyGuidePriceInPerM: number;
+  studyGuidePriceOutPerM: number;
+  /** none | low | medium | high; vacío = el valor por defecto del modelo. */
+  studyGuideReasoning: string;
   /** Tareas con IA (agente con herramientas). Sin HOMEWORK_MODEL usan el mismo modelo y precios que las guías. */
   homeworkModel: string;
   homeworkPriceInPerM: number;
@@ -227,6 +233,10 @@ export function readConfig(): AppConfig {
     studyGuideMonthlyCapUsd: decimal('STUDY_GUIDE_MONTHLY_CAP_USD', 5, 0, 1000, problems),
     studyGuideMaxPerRun: int('STUDY_GUIDE_MAX_PER_RUN', 5, 1, 100, problems),
     studyGuideMaxInputChars: int('STUDY_GUIDE_MAX_INPUT_CHARS', 120_000, 5_000, 600_000, problems),
+    studyGuideModel: (process.env.GUIDE_MODEL ?? '').trim() || (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
+    studyGuidePriceInPerM: decimal('GUIDE_PRICE_IN_PER_M', decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems), 0, 1000, problems),
+    studyGuidePriceOutPerM: decimal('GUIDE_PRICE_OUT_PER_M', decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems), 0, 1000, problems),
+    studyGuideReasoning: (process.env.GUIDE_REASONING_EFFORT ?? '').trim().toLowerCase(),
     homeworkModel: (process.env.HOMEWORK_MODEL ?? '').trim() || (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
     homeworkPriceInPerM: decimal('HOMEWORK_PRICE_IN_PER_M', decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems), 0, 1000, problems),
     homeworkPriceOutPerM: decimal('HOMEWORK_PRICE_OUT_PER_M', decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems), 0, 1000, problems),

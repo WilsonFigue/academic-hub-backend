@@ -29,33 +29,34 @@ const dateText = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString
 export const CSS = `
   @page { size: A4; }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; font-size: 11pt; line-height: 1.55; color: #141a24; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .hero { padding: 20px 24px; border-radius: 16px; background: #fff1ec; border-left: 6px solid #ff5a36; }
-  .kicker { margin: 0 0 6px; font-size: 8.5pt; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #c2410c; }
-  h1 { margin: 0; font-size: 22pt; line-height: 1.12; letter-spacing: -.02em; }
-  .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .meta span { padding: 3px 10px; border-radius: 999px; background: #fff; font-size: 8.5pt; font-weight: 600; color: #5b6472; }
-  .summary { margin: 16px 0 6px; padding: 14px 18px; border-radius: 14px; background: #ff5a36; color: #fff; font-size: 11.5pt; font-weight: 600; line-height: 1.5; }
-  section { margin-top: 16px; break-inside: avoid-page; }
-  h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-size: 14pt; letter-spacing: -.01em; }
-  h2 .n { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 8px; background: #ffe3da; color: #c2410c; font-size: 10pt; font-weight: 800; }
-  section.missing { padding: 12px 16px; border-radius: 12px; background: #fff7e6; border: 1px solid #f5d9a4; }
+  body { margin: 0; font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; font-size: 10.5pt; line-height: 1.45; color: #141a24; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .hero { padding: 11px 16px; border-radius: 10px; background: #fff1ec; border-left: 5px solid #ff5a36; }
+  .kicker { margin: 0 0 3px; font-size: 8pt; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #c2410c; }
+  h1 { margin: 0; font-size: 17pt; line-height: 1.15; letter-spacing: -.01em; }
+  .meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .meta span { padding: 2px 9px; border-radius: 999px; background: #fff; font-size: 8pt; font-weight: 600; color: #5b6472; }
+  .summary { margin: 9px 0 2px; padding: 9px 14px; border-radius: 9px; background: #ff5a36; color: #fff; font-size: 10.5pt; font-weight: 600; line-height: 1.45; }
+  /* Las secciones fluyen de una página a la siguiente: nada de saltos de página que dejen huecos. */
+  section { margin-top: 11px; }
+  h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 5px; font-size: 12pt; letter-spacing: -.005em; break-after: avoid; }
+  h2 .n { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 20px; height: 20px; border-radius: 6px; background: #ffe3da; color: #c2410c; font-size: 9pt; font-weight: 800; }
+  section.missing { padding: 8px 12px; border-radius: 9px; background: #fff7e6; border: 1px solid #f5d9a4; }
   section.missing h2 .n { background: #fde7b0; color: #92400e; }
-  p { margin: 0 0 6px; }
-  ul.bullets, ul.checks, ul.sources, ol.steps { margin: 6px 0 0; padding: 0; list-style: none; }
-  ul.bullets li { position: relative; margin-bottom: 4px; padding: 6px 10px 6px 26px; border-radius: 10px; background: #f4f2ec; break-inside: avoid; }
-  ul.bullets li::before { content: ''; position: absolute; top: 12px; left: 11px; width: 6px; height: 6px; border-radius: 50%; background: #ff5a36; }
+  p { margin: 0 0 4px; }
+  ul.bullets, ul.checks, ul.sources, ol.steps { margin: 4px 0 0; padding: 0; list-style: none; }
+  ul.bullets li { position: relative; margin-bottom: 3px; padding: 4px 9px 4px 22px; border-radius: 8px; background: #f4f2ec; break-inside: avoid; }
+  ul.bullets li::before { content: ''; position: absolute; top: 10px; left: 9px; width: 5px; height: 5px; border-radius: 50%; background: #ff5a36; }
   ol.steps { counter-reset: step; }
-  ol.steps li { position: relative; margin-bottom: 5px; padding: 8px 12px 8px 42px; border-radius: 10px; background: #f4f2ec; counter-increment: step; break-inside: avoid; }
-  ol.steps li::before { content: counter(step); position: absolute; top: 7px; left: 10px; width: 22px; height: 22px; border-radius: 7px; background: #ff5a36; color: #fff; text-align: center; font-size: 9.5pt; font-weight: 800; line-height: 22px; }
-  ul.checks li { display: flex; gap: 10px; margin-bottom: 4px; padding: 6px 10px; border-radius: 10px; background: #f4f2ec; break-inside: avoid; }
-  ul.checks li::before { content: ''; flex: none; width: 13px; height: 13px; margin-top: 3px; border-radius: 4px; border: 1.6px solid #8b94a3; background: #fff; }
-  ul.sources li { margin-bottom: 4px; padding: 6px 10px; border-radius: 10px; background: #f4f2ec; break-inside: avoid; }
+  ol.steps li { position: relative; margin-bottom: 3px; padding: 5px 10px 5px 36px; border-radius: 8px; background: #f4f2ec; counter-increment: step; break-inside: avoid; }
+  ol.steps li::before { content: counter(step); position: absolute; top: 5px; left: 8px; width: 19px; height: 19px; border-radius: 6px; background: #ff5a36; color: #fff; text-align: center; font-size: 8.5pt; font-weight: 800; line-height: 19px; }
+  ul.checks li { display: flex; gap: 9px; margin-bottom: 3px; padding: 4px 9px; border-radius: 8px; background: #f4f2ec; break-inside: avoid; }
+  ul.checks li::before { content: ''; flex: none; width: 12px; height: 12px; margin-top: 3px; border-radius: 3px; border: 1.5px solid #8b94a3; background: #fff; }
+  ul.sources li { margin-bottom: 3px; padding: 4px 9px; border-radius: 8px; background: #f4f2ec; break-inside: avoid; }
   ul.sources small { display: block; color: #5b6472; }
-  .geo { margin-top: 16px; padding: 12px 16px; border-radius: 12px; background: #eef6ff; border: 1px solid #cfe3fb; break-inside: avoid; }
+  .geo { margin-top: 11px; padding: 9px 13px; border-radius: 10px; background: #eef6ff; border: 1px solid #cfe3fb; break-inside: avoid; }
   .geo b { color: #1d4ed8; }
   .geo a { color: #1d4ed8; word-break: break-all; }
-  .foot { margin-top: 20px; font-size: 8.5pt; color: #5b6472; }
+  .foot { margin-top: 12px; font-size: 8pt; color: #5b6472; }
 `;
 
 export function renderGuideHtml(input: GuidePdfInput): string {
@@ -115,7 +116,7 @@ export async function renderGuidePdf(input: GuidePdfInput): Promise<Buffer> {
   try {
     await page.setContent(renderGuideHtml(input), { waitUntil: 'load' });
     return await page.pdf({
-      format: 'A4', printBackground: true, margin: { top: '16mm', right: '16mm', bottom: '18mm', left: '16mm' },
+      format: 'A4', printBackground: true, margin: { top: '12mm', right: '14mm', bottom: '15mm', left: '14mm' },
       displayHeaderFooter: true, headerTemplate: '<span></span>',
       footerTemplate: '<div style="width:100%;padding:0 16mm;font-size:8px;color:#8b94a3;font-family:Arial,sans-serif;display:flex;justify-content:space-between"><span>Academic Hub · Guía de estudio</span><span><span class="pageNumber"></span> / <span class="totalPages"></span></span></div>',
     });
@@ -125,10 +126,12 @@ export async function renderGuidePdf(input: GuidePdfInput): Promise<Buffer> {
 }
 
 const PDF_DIR = join(process.cwd(), '.state', 'guides');
+/** Súbelo al cambiar el diseño: los PDF en caché se rehacen. */
+const PDF_VERSION = 'v2-compacto';
 /** PDF en caché: cambia solo cuando cambia el contenido de la guía. */
 export async function guidePdf(guideId: string, input: GuidePdfInput): Promise<string> {
   mkdirSync(PDF_DIR, { recursive: true });
-  const hash = createHash('sha1').update(JSON.stringify([input.title, input.course, input.dueAt, input.points, input.content, input.wantsGeoGebra, input.webUrl])).digest('hex').slice(0, 12);
+  const hash = createHash('sha1').update(JSON.stringify([PDF_VERSION, input.title, input.course, input.dueAt, input.points, input.content, input.wantsGeoGebra, input.webUrl])).digest('hex').slice(0, 12);
   const target = join(PDF_DIR, `${guideId}-${hash}.pdf`);
   if (existsSync(target)) return target;
   writeFileSync(target, await renderGuidePdf(input), { mode: 0o600 });

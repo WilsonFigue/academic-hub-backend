@@ -56,7 +56,7 @@ export function createAcademicRepository(db: Database) {
         `WITH own AS (${OWN_ENROLLMENTS})
          SELECT c.id, c.name, c.display_name AS "displayName", c.course_code AS "courseCode", c.display_id AS "displayId",
                 c.description, c.start_at AS "startAt", c.end_at AS "endAt", c.is_available AS "isAvailable", c.is_closed AS "isClosed",
-                c.lms_url AS "lmsUrl", c.last_seen_at AS "lastSeenAt",
+                c.lms_url AS "lmsUrl", c.last_seen_at AS "lastSeenAt", c.instructor_name AS "instructorName",
                 CASE WHEN t.id IS NULL THEN NULL ELSE json_build_object('id', t.id, 'name', t.name, 'startAt', t.start_at, 'endAt', t.end_at) END AS term,
                 json_build_object('id', ce.id, 'role', ce.role, 'isAvailable', ce.is_available, 'enrolledAt', ce.enrolled_at,
                                   'lastAccessAt', ce.last_access_at, 'userHasHidden', ce.user_has_hidden) AS enrollment,

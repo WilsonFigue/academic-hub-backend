@@ -22,7 +22,8 @@
     "refresh:full": "tsx scripts/refresh.ts full",
     "refresh:daily": "tsx scripts/refresh.ts daily",
     "credentials": "tsx scripts/credentials.ts",
-    "homework:flag": "tsx scripts/homework-flag.ts"
+    "homework:flag": "tsx scripts/homework-flag.ts",
+    "instructors": "tsx scripts/fetch-instructors.ts"
   },
   "license": "UNLICENSED",
   "type": "module",
@@ -38,6 +39,7 @@
     "fflate": "^0.8.3",
     "hyperformula": "^3.5.0",
     "mathjs": "^15.2.0",
+    "pdf-lib": "^1.17.1",
     "pg": "^8.23.1",
     "playwright": "1.58.0",
     "unpdf": "^2.0.0"

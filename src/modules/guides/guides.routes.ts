@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Database } from '../../database/connection.js';
 import { currentSession, requireAuth } from '../auth/auth.guard.js';
 import { DEFAULT_POLICY, getGuide, getGuidePdfSource, listSettings, processQueue, requestGuide, setEnabled, type GuideGenerator, type GuidePolicy } from './guides.js';
+import { guideDocx } from './docx.js';
 import { guidePdf, readPdf } from './pdf.js';
 import { HttpError } from '../../shared/errors.js';
 
@@ -48,6 +49,15 @@ export async function guidesRoutes(app: FastifyInstance, { db, generator, policy
     return reply.header('Content-Type', 'application/pdf').header('X-Content-Type-Options', 'nosniff').header('Cache-Control', 'private, max-age=60')
       .header('Content-Disposition', `${request.query.download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(fileName)}.pdf`)
       .header('Content-Length', bytes.length).send(bytes);
+  });
+
+  // La misma guía en Word.
+  app.get<{ Params: { id: string } }>('/activities/:id/study-guide/docx', { preHandler: auth, schema: { tags: ['study-guides'], params: uuidParam } }, async (request, reply) => {
+    const source = await getGuidePdfSource(db, userId(request), request.params.id);
+    const fileName = `Guía de estudio - ${source.title}`.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const bytes = await guideDocx(source);
+    return reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document').header('X-Content-Type-Options', 'nosniff').header('Cache-Control', 'private, max-age=60')
+      .header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}.docx`).header('Content-Length', bytes.length).send(bytes);
   });
 
   // Botón manual: pide la guía de ESTA actividad aunque la materia esté apagada. Si ya existe, 409.

@@ -13,7 +13,7 @@ import { notFound } from '../../shared/errors.js';
 import { classifyActivity } from './eligibility.js';
 import { aiSpend, logAiUsage, monthStart, nextMonthStart } from '../logs/logs.js';
 
-export interface Deliverable { name: string; kind: 'pdf' | 'docx' | 'xlsx'; bytes: number }
+export interface Deliverable { name: string; kind: 'pdf' | 'docx' | 'xlsx' | 'ggb'; bytes: number }
 export interface HomeworkReport {
   turns: number; tools: Record<string, number>; assumptions: string[]; pending: string[]; placeholders: string[]; warnings: string[]; materialDocs: string[];
 }

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Database } from '../../database/connection.js';
-import { badRequest, notFound } from '../../shared/errors.js';
+import { HttpError, badRequest, notFound } from '../../shared/errors.js';
 import type { AuthRepository } from '../auth/auth.repository.js';
 import { currentSession, requireAuth } from '../auth/auth.guard.js';
 import { toPublicUser } from '../auth/auth.service.js';
@@ -176,6 +176,22 @@ export async function academicRoutes(app: FastifyInstance, { db, repo, authRepo 
   });
 
   app.get('/evaluation-overview', { preHandler: auth, schema: { tags: ['evaluation-cycles'] } }, async (request) => ({ terms: await repo.evaluationOverview(userId(request)) }));
+
+  // Docente de la materia (nombre completo, escrito por el estudiante). Lo comparten quienes cursan la misma materia; null lo borra.
+  app.put<{ Params: { id: string }; Body: { name: string | null } }>('/courses/:id/instructor', {
+    preHandler: auth,
+    schema: { tags: ['courses'], params: uuidParam, body: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: ['string', 'null'], maxLength: 200 } } } },
+  }, async (request) => {
+    const name = request.body.name === null ? null : request.body.name.replace(/\s+/g, ' ').trim();
+    if (name !== null && name.length > 0 && name.length < 3) throw new HttpError(400, 'validation_failed', 'Escribe el nombre completo del docente.');
+    const { rows } = await db.query<{ instructor_name: string | null }>(
+      `UPDATE courses c SET instructor_name = $3, instructor_set_at = now()
+        WHERE c.id = $2 AND EXISTS (SELECT 1 FROM course_enrollments ce JOIN external_accounts ea ON ea.id = ce.external_account_id
+                                     WHERE ce.course_id = c.id AND ea.user_id = $1 AND ea.link_status <> 'revoked' AND ce.status = 'active')
+        RETURNING c.instructor_name`, [userId(request), request.params.id, name || null]);
+    if (!rows[0]) throw new HttpError(404, 'not_found', 'Recurso no encontrado.');
+    return { courseId: request.params.id, instructorName: rows[0].instructor_name };
+  });
 
   app.get<{ Params: { id: string } }>('/courses/:id/evaluation-cycles', { preHandler: auth, schema: { tags: ['evaluation-cycles'], params: uuidParam } }, async (request) => {
     const enrollmentId = await repo.ownEnrollment(userId(request), request.params.id);

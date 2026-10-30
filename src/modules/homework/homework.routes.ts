@@ -6,7 +6,7 @@ import { currentSession, requireAuth } from '../auth/auth.guard.js';
 import { getDeliverablePath, getHomework, listSettings, setEnabled } from './homework.js';
 
 const uuidParam = { type: 'object', required: ['id'], additionalProperties: false, properties: { id: { type: 'string', format: 'uuid' } } } as const;
-const MIME = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } as const;
+const MIME = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ggb: 'application/vnd.geogebra.file' } as const;
 
 export async function homeworkRoutes(app: FastifyInstance, { db }: { db: Database }): Promise<void> {
   const auth = requireAuth();

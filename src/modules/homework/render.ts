@@ -61,3 +61,40 @@ export async function svgToPng(svg: string, width = 900): Promise<Buffer> {
     await page.close().catch(() => {});
   }
 }
+
+/** Página completa de Chromium (con tiempos de espera propios) para herramientas que necesitan un navegador de verdad, como GeoGebra. */
+export interface RichPage {
+  setContent(html: string, options?: object): Promise<void>;
+  evaluate(script: string): Promise<unknown>;
+  close(): Promise<void>;
+}
+export async function withPage<T>(fn: (page: RichPage) => Promise<T>): Promise<T> {
+  const page = await (await getBrowser()).newPage() as unknown as RichPage;
+  try { return await fn(page); } finally { await page.close().catch(() => {}); }
+}
+
+/** PDF con los márgenes, el número de página y la portada definidos por el propio CSS (@page): sin encabezado ni pie de Chromium. */
+export async function htmlToPdfCss(html: string): Promise<Buffer> {
+  const page = await (await getBrowser()).newPage();
+  try {
+    await page.setContent(html, { waitUntil: 'load' });
+    return await page.pdf({ preferCSSPageSize: true, printBackground: true, displayHeaderFooter: false });
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+/** PDF con el número de página centrado abajo (la portada va aparte y sin número; ver document.ts). */
+export async function htmlToPdfNumbered(html: string): Promise<Buffer> {
+  const page = await (await getBrowser()).newPage();
+  try {
+    await page.setContent(html, { waitUntil: 'load' });
+    return await page.pdf({
+      format: 'A4', printBackground: true, margin: { top: '20mm', right: '22mm', bottom: '22mm', left: '22mm' },
+      displayHeaderFooter: true, headerTemplate: '<span></span>',
+      footerTemplate: '<div style="width:100%;text-align:center;font-size:9px;color:#444;font-family:Arial,sans-serif"><span class="pageNumber"></span></div>',
+    });
+  } finally {
+    await page.close().catch(() => {});
+  }
+}

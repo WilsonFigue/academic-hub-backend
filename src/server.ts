@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   const { DEFAULT_POLICY } = await import('./modules/guides/guides.js');
   const guidePolicy = { ...DEFAULT_POLICY, monthlyCapUsd: config.studyGuideMonthlyCapUsd, maxPerRun: config.studyGuideMaxPerRun };
   const guideGenerator = config.openaiApiKey && db
-    ? createOpenAIGenerator({ apiKey: config.openaiApiKey, model: config.openaiModel, priceInPerM: config.openaiPriceInPerM, priceOutPerM: config.openaiPriceOutPerM,
+    ? createOpenAIGenerator({ apiKey: config.openaiApiKey, model: config.studyGuideModel, priceInPerM: config.studyGuidePriceInPerM, priceOutPerM: config.studyGuidePriceOutPerM, reasoningEffort: config.studyGuideReasoning || undefined,
         maxInputChars: config.studyGuideMaxInputChars, db, store: createFileStore(sessions) })
     : undefined;
   // Tareas con IA: la rutina corre solo cuando un programador externo llama al endpoint interno; sin clave de OpenAI quedan en cola.

@@ -15,6 +15,8 @@ export interface OpenAIOptions {
   maxInputChars: number;
   db: Queryable;
   store: FileStore;
+  /** none | low | medium | high. Sin valor, el del modelo. */
+  reasoningEffort?: string;
   timeoutMs?: number;
   /** Para pruebas: reemplaza fetch. */
   fetchImpl?: typeof fetch;
@@ -126,6 +128,7 @@ export function createOpenAIGenerator(options: OpenAIOptions): OpenAIGenerator {
             messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: prompt }],
             response_format: { type: 'json_schema', json_schema: { name: 'guia_de_estudio', strict: true, schema: SCHEMA } },
             max_completion_tokens: 16_000,
+            ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
             user: `guide-${request.guideId}`,
           }),
           signal: AbortSignal.timeout(options.timeoutMs ?? 180_000),

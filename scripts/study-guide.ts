@@ -22,7 +22,7 @@ if (!config.openaiApiKey) { console.error('Falta OPENAI_API_KEY en .env.'); proc
 const db = createDatabase(config, requireDatabaseUrl(config, 'DATABASE_URL'), { max: 2 });
 const sessions = config.credentialsKey ? new BlackboardSessions({ db, key: config.credentialsKey, baseUrl: UTEC.lmsBaseUrl, visible: config.scheduledLoginVisible }) : null;
 const generator = createOpenAIGenerator({
-  apiKey: config.openaiApiKey, model: config.openaiModel, priceInPerM: config.openaiPriceInPerM, priceOutPerM: config.openaiPriceOutPerM,
+  apiKey: config.openaiApiKey, model: config.studyGuideModel, priceInPerM: config.studyGuidePriceInPerM, priceOutPerM: config.studyGuidePriceOutPerM, reasoningEffort: config.studyGuideReasoning || undefined,
   maxInputChars: config.studyGuideMaxInputChars, db, store: createFileStore(sessions),
 });
 const policy = { ...DEFAULT_POLICY, monthlyCapUsd: config.studyGuideMonthlyCapUsd, maxPerRun: config.studyGuideMaxPerRun };
@@ -36,7 +36,7 @@ try {
   if (found.rows.length !== 1) { console.error(found.rows.length === 0 ? 'No encontré esa actividad.' : `Hay ${found.rows.length} actividades que coinciden; sé más específico.`); process.exit(1); }
   const row = found.rows[0]!;
   console.log(`Actividad: «${row.name}» · ${row.course}`);
-  console.log(`Modelo: ${config.openaiModel} · precios configurados: $${config.openaiPriceInPerM} entrada / $${config.openaiPriceOutPerM} salida por millón de tokens\n`);
+  console.log(`Modelo: ${config.studyGuideModel} · precios configurados: $${config.studyGuidePriceInPerM} entrada / $${config.studyGuidePriceOutPerM} salida por millón de tokens\n`);
 
   if (dry) {
     const plan = await generator.describe({ guideId: 'dry-run', enrollmentId: row.enrollment_id, courseId: row.course_id, gradebookColumnId: row.column_id });
