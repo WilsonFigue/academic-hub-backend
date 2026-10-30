@@ -35,6 +35,8 @@ export interface AppConfig {
   mailchimpApiKey: string | null;
   mailchimpListId: string | null;
   mailFromName: string;
+  /** Token del bot de Telegram (BotFather) para los avisos por Telegram; sin él no se manda nada. */
+  telegramBotToken: string | null;
   openaiModel: string;
   /** Precios en USD por millón de tokens (para calcular el costo de cada guía y respetar el tope mensual). */
   openaiPriceInPerM: number;
@@ -234,6 +236,7 @@ export function readConfig(): AppConfig {
     mailchimpApiKey: (process.env.MAILCHIMP_API_KEY ?? process.env.MAILCHIMP_TRANSACTIONAL_API_KEY ?? '').trim() || null,
     mailchimpListId: (process.env.MAILCHIMP_LIST_ID ?? '').trim() || null,
     mailFromName: (process.env.MAIL_FROM_NAME ?? 'Academic Hub').trim() || 'Academic Hub',
+    telegramBotToken: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim() || null,
     openaiModel: (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
     openaiPriceInPerM: decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems),
     openaiPriceOutPerM: decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems),

@@ -7,10 +7,12 @@ import { HttpError, notFound } from '../../shared/errors.js';
 import type { Mailer } from './mailer.js';
 import { sendSummaries } from './summary.js';
 import { sendWeekly } from './weekly.js';
+import { notConfiguredTelegram, type TelegramClient } from './telegram.js';
+import { dispatchPending, scanEveryone } from './telegram-service.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
-export async function emailRoutes(app: FastifyInstance, { db, operatorToken, mailer, capUsd }: { db: Database; operatorToken: string; mailer: Mailer; capUsd: number }): Promise<void> {
+export async function emailRoutes(app: FastifyInstance, { db, operatorToken, mailer, capUsd, telegram = notConfiguredTelegram, webUrl = null }: { db: Database; operatorToken: string; mailer: Mailer; capUsd: number; telegram?: TelegramClient; webUrl?: string | null }): Promise<void> {
   const tokenHash = sha256(operatorToken);
   function authorizeOperator(request: FastifyRequest): void {
     if (!LOOPBACK.has(request.socket.remoteAddress ?? '')) throw notFound();
@@ -29,5 +31,13 @@ export async function emailRoutes(app: FastifyInstance, { db, operatorToken, mai
     const send = options.kind === 'weekly' ? sendWeekly : sendSummaries;
     const results = await send(db, mailer, { capUsd, userId: options.userId, dryRun: options.dryRun, force: options.force, reviewTo: options.reviewTo });
     return { results: results.map(({ html, ...rest }) => (options.dryRun ? { ...rest, htmlLength: html?.length ?? 0 } : rest)) };
+  });
+
+  // Recalcula los recordatorios de entrega de todos y manda por Telegram los avisos pendientes (respeta el horario de silencio).
+  // El servidor ya lo hace solo cada 10 minutos; esto sirve para dispararlo desde otra rutina.
+  app.post('/internal/dev/notifications/scan', { schema: { hide: true } }, async (request) => {
+    authorizeOperator(request);
+    const created = await scanEveryone(db);
+    return { created, telegram: await dispatchPending(db, telegram, { webUrl }) };
   });
 }

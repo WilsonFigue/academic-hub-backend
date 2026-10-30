@@ -37,9 +37,14 @@ async function main(): Promise<void> {
   // Correo de resumen (Mailchimp): sin llave no se envía nada.
   const { createMailchimpMailer, notConfiguredMailer } = await import('./modules/notifications/mailer.js');
   const mailer = config.mailchimpApiKey ? createMailchimpMailer({ apiKey: config.mailchimpApiKey, listId: config.mailchimpListId, fromName: config.mailFromName }) : notConfiguredMailer;
+  // Avisos por Telegram: sin token no se conecta ni se manda nada. El enlace «Abrir en Academic Hub» solo sirve si la web no es localhost.
+  const { createTelegramClient, notConfiguredTelegram } = await import('./modules/notifications/telegram.js');
+  const telegram = config.telegramBotToken ? createTelegramClient({ token: config.telegramBotToken }) : notConfiguredTelegram;
+  const webUrl = ['localhost', '127.0.0.1', '::1'].includes(new URL(config.frontendOrigin).hostname) ? null : config.frontendOrigin;
   const app = await buildApp({
     config,
     db,
+    telegram,
     blackboardSessions: sessions,
     guideGenerator,
     guidePolicy,
@@ -51,15 +56,17 @@ async function main(): Promise<void> {
           await instance.register(devImportRoutes, { db: db!, operatorToken: config.devOperatorToken!, passingGradePct: config.passingGradePct,
             credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible, guideGenerator, guidePolicy, homeworkGenerator, homeworkPolicy });
           const { emailRoutes } = await import('./modules/notifications/email.routes.js');
-          await instance.register(emailRoutes, { db: db!, operatorToken: config.devOperatorToken!, mailer, capUsd: config.homeworkMonthlyCapUsd });
+          await instance.register(emailRoutes, { db: db!, operatorToken: config.devOperatorToken!, mailer, capUsd: config.homeworkMonthlyCapUsd, telegram, webUrl });
         }
       : undefined,
   });
   if (!db) app.log.warn('Sin base de datos configurada: /api/v1 responderá 503.');
   if (internalEnabled) app.log.warn('Rutas /internal/dev habilitadas (solo loopback, requieren DEV_OPERATOR_TOKEN).');
 
+  let stopTelegram: (() => void) | null = null;
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'Cerrando servidor');
+    stopTelegram?.();
     await app.close();
     await db?.close();
     process.exit(0);
@@ -68,6 +75,11 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   await app.listen({ port: config.port, host: config.host });
+  if (db && telegram.configured) {
+    const { startTelegramLoops } = await import('./modules/notifications/telegram-service.js');
+    stopTelegram = startTelegramLoops(db, telegram, { webUrl, onError: (error) => app.log.warn({ err: { name: (error as Error)?.name, code: (error as { code?: string })?.code } }, 'telegram loop') });
+    app.log.info('Avisos por Telegram activos.');
+  }
 }
 
 main().catch((error: unknown) => {
