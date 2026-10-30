@@ -11,11 +11,14 @@ import { createAuthRepository } from './modules/auth/auth.repository.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { createAuthService } from './modules/auth/auth.service.js';
 import { guidesRoutes } from './modules/guides/guides.routes.js';
+import { homeworkRoutes } from './modules/homework/homework.routes.js';
 import { notConfiguredGenerator, type GuideGenerator, type GuidePolicy } from './modules/guides/guides.js';
 import { filesRoutes } from './modules/files/files.routes.js';
 import type { BlackboardSessions } from './modules/files/sessions.js';
 import { healthRoutes } from './modules/health/health.routes.js';
 import { HttpError } from './shared/errors.js';
+import { hashIp } from './shared/crypto.js';
+import { logApiRequest } from './modules/logs/logs.js';
 
 export interface BuildAppOptions {
   config: AppConfig;
@@ -68,20 +71,40 @@ export async function buildApp({ config, db, logger = true, registerInternal, bl
     },
   });
 
+  // Bitácora de peticiones (api_request_log): el manejador de errores deja aquí el detalle y el hook onResponse lo guarda junto con el resultado.
+  const errorInfo = new WeakMap<object, { code: string; message: string; detail?: unknown }>();
+  if (db) {
+    app.addHook('onResponse', async (request, reply) => {
+      const path = request.url.split('?')[0] ?? request.url;
+      if (path === '/health' || path.startsWith('/health/') || path === '/openapi.json') return;
+      const info = errorInfo.get(request);
+      await logApiRequest(db, {
+        requestId: request.id, method: request.method, route: request.routeOptions?.url ?? null, path, status: reply.statusCode, durationMs: reply.elapsedTime,
+        userId: request.auth?.user_id ?? null, ipHash: hashIp(request.ip), userAgent: request.headers['user-agent'],
+        errorCode: info?.code ?? (reply.statusCode >= 400 ? `http_${reply.statusCode}` : null), errorMessage: info?.message ?? null, errorDetail: info?.detail,
+      });
+    });
+  }
+
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof HttpError) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
+    if (error instanceof HttpError) { errorInfo.set(request, { code: error.code, message: error.message }); return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } }); }
     const fastifyError = error as { validation?: unknown; statusCode?: number; code?: string };
     if (fastifyError.validation) {
+      errorInfo.set(request, { code: 'validation_failed', message: 'La solicitud no es válida.', detail: fastifyError.validation });
       return reply.code(400).send({ error: { code: 'validation_failed', message: 'La solicitud no es válida.', details: fastifyError.validation } });
     }
+    if (fastifyError.statusCode === 429) errorInfo.set(request, { code: 'rate_limited', message: 'Demasiadas solicitudes.' });
     if (fastifyError.statusCode === 429) return reply.code(429).send({ error: { code: 'rate_limited', message: 'Demasiadas solicitudes. Intenta más tarde.' } });
     if (error instanceof DatabaseError) {
+      errorInfo.set(request, { code: 'database_unavailable', message: error.message, detail: { kind: error.kind, code: error.code } });
       request.log.error({ kind: error.kind, code: error.code }, 'database error');
       return reply.code(503).send({ error: { code: 'database_unavailable', message: 'Servicio temporalmente no disponible.' } });
     }
     if (fastifyError.statusCode && fastifyError.statusCode < 500) {
+      errorInfo.set(request, { code: fastifyError.code ?? 'bad_request', message: (error as Error).message?.slice(0, 300) ?? 'bad_request' });
       return reply.code(fastifyError.statusCode).send({ error: { code: 'bad_request', message: 'La solicitud no es válida.' } });
     }
+    errorInfo.set(request, { code: 'internal_error', message: `${(error as Error).name}: ${(error as Error).message}`.slice(0, 400) });
     request.log.error({ err: { name: (error as Error).name } }, 'unhandled error');
     return reply.code(500).send({ error: { code: 'internal_error', message: 'Error interno.' } });
   });
@@ -106,6 +129,7 @@ export async function buildApp({ config, db, logger = true, registerInternal, bl
     await api.register(academicRoutes, { db, repo: createAcademicRepository(db), authRepo });
     await api.register(filesRoutes, { db, sessions: blackboardSessions });
     await api.register(guidesRoutes, { db, generator: guideGenerator, policy: guidePolicy, webOrigin: config.frontendOrigin });
+    await api.register(homeworkRoutes, { db });
   }, { prefix: '/api/v1' });
 
   if (registerInternal) await registerInternal(app);

@@ -101,7 +101,11 @@ export async function gatherMaterial(db: Queryable, store: FileStore, request: G
     used += docs[0]!.chars;
   }
   const perDoc = Math.max(8_000, Math.floor(maxChars / 2));
+  const seen = new Set<string>();
   for (const candidate of scored) {
+    const key = `${candidate.title}|${candidate.file?.fileSize ?? ''}`;
+    if (seen.has(key)) { skipped.push({ title: candidate.title, reason: 'duplicado' }); continue; }
+    seen.add(key);
     if (used >= maxChars) { skipped.push({ title: candidate.title, reason: 'fuera del tope de material' }); continue; }
     let text: string;
     if (candidate.file) {

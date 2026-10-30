@@ -22,6 +22,14 @@ async function main(): Promise<void> {
     ? createOpenAIGenerator({ apiKey: config.openaiApiKey, model: config.openaiModel, priceInPerM: config.openaiPriceInPerM, priceOutPerM: config.openaiPriceOutPerM,
         maxInputChars: config.studyGuideMaxInputChars, db, store: createFileStore(sessions) })
     : undefined;
+  // Tareas con IA: la rutina corre solo cuando un programador externo llama al endpoint interno; sin clave de OpenAI quedan en cola.
+  const { createHomeworkGenerator } = await import('./modules/homework/agent.js');
+  const { DEFAULT_HOMEWORK_POLICY, HOMEWORK_DIR } = await import('./modules/homework/homework.js');
+  const homeworkPolicy = { ...DEFAULT_HOMEWORK_POLICY, monthlyCapUsd: config.homeworkMonthlyCapUsd, maxPerRun: config.homeworkMaxPerRun, estimatedCostUsd: config.homeworkEstimatedCostUsd, maxPerTaskUsd: config.homeworkMaxPerTaskUsd };
+  const homeworkGenerator = config.openaiApiKey && db
+    ? createHomeworkGenerator({ apiKey: config.openaiApiKey, model: config.homeworkModel, priceInPerM: config.homeworkPriceInPerM, priceOutPerM: config.homeworkPriceOutPerM,
+        maxInputChars: config.studyGuideMaxInputChars, maxPerTaskUsd: config.homeworkMaxPerTaskUsd, maxTurns: config.homeworkMaxTurns, reasoningEffort: config.homeworkReasoning, db, store: createFileStore(sessions), outDir: HOMEWORK_DIR })
+    : undefined;
   const app = await buildApp({
     config,
     db,
@@ -32,7 +40,7 @@ async function main(): Promise<void> {
       ? async (instance) => {
           const { devImportRoutes } = await import('./modules/import/dev-import.routes.js');
           await instance.register(devImportRoutes, { db: db!, operatorToken: config.devOperatorToken!, passingGradePct: config.passingGradePct,
-            credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible, guideGenerator, guidePolicy });
+            credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible, guideGenerator, guidePolicy, homeworkGenerator, homeworkPolicy });
         }
       : undefined,
   });

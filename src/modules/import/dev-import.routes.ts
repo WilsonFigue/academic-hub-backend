@@ -10,6 +10,8 @@ import { LoginError, loginInteractively } from '../blackboard/session-login.js';
 import { loadCredentials, markCredentialUse, saveCredentials } from '../credentials/vault.js';
 import { applyCalendar, importCalendar } from '../calendar/calendar.service.js';
 import { enqueueRoutine, notConfiguredGenerator, processQueue, type GuideGenerator, type GuidePolicy } from '../guides/guides.js';
+import { ensureMonthlyReports, writeMonthlyReport, monthStartFromKey, monthStart } from '../logs/report.js';
+import { enqueueRoutine as enqueueHomework, notConfiguredHomework, DEFAULT_HOMEWORK_POLICY, processQueue as processHomework, type HomeworkGenerator, type HomeworkPolicy } from '../homework/homework.js';
 import { dispatchReviewMarks } from '../files/reviews.js';
 import { ImportError, UTEC, importStudent, type ImportMode, type ImportSummary } from './import.service.js';
 
@@ -51,9 +53,12 @@ export interface DevImportOptions {
   /** Generador de guías de estudio; sin él la rutina solo encola. */
   guideGenerator?: GuideGenerator;
   guidePolicy?: GuidePolicy;
+  /** Agente de tareas con IA; sin él la rutina solo encola. */
+  homeworkGenerator?: HomeworkGenerator;
+  homeworkPolicy?: HomeworkPolicy;
 }
 
-export async function devImportRoutes(app: FastifyInstance, { db, operatorToken, passingGradePct = null, credentialsKey = null, scheduledLoginVisible = false, guideGenerator = notConfiguredGenerator, guidePolicy }: DevImportOptions): Promise<void> {
+export async function devImportRoutes(app: FastifyInstance, { db, operatorToken, passingGradePct = null, credentialsKey = null, scheduledLoginVisible = false, guideGenerator = notConfiguredGenerator, guidePolicy, homeworkGenerator = notConfiguredHomework, homeworkPolicy }: DevImportOptions): Promise<void> {
   /** Tras cada actualización: encola las guías de las materias activadas y las procesa en segundo plano (sin retrasar la actualización). */
   const guidesAfterRefresh = async (userId: string) => {
     try {
@@ -270,6 +275,29 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
     const routine = await enqueueRoutine(db, guidePolicy);
     const queue = await processQueue(db, guideGenerator, guidePolicy);
     return { routine, queue };
+  });
+
+  // Rutina de tareas con IA: encola las actividades pendientes (nunca exámenes) de las materias con la bandera activa y las procesa.
+  // Solo la dispara quien llama a este endpoint; nada se programa dentro de la API.
+  app.post('/internal/dev/utec/homework/run', { logLevel: 'warn', schema: { hide: true } }, async (request, reply) => {
+    authorizeOperator(request);
+    // El mes nuevo empieza de cero solo: antes de trabajar se guarda el reporte de cada mes ya terminado que no lo tenga.
+    const capUsd = (homeworkPolicy ?? DEFAULT_HOMEWORK_POLICY).monthlyCapUsd;
+    const reports = await ensureMonthlyReports(db, { capUsd }).catch(() => [] as string[]);
+    const routine = await enqueueHomework(db, homeworkPolicy);
+    // El trabajo con IA tarda minutos: se responde enseguida y se sigue en segundo plano. Cada llamada y cada resultado quedan en ai_usage_log.
+    void processHomework(db, homeworkGenerator, homeworkPolicy).catch((error) => app.log.error({ err: { name: (error as Error)?.name } }, 'homework queue failed'));
+    return reply.code(202).send({ reports, routine, processing: homeworkGenerator.configured ? 'started' : 'ai_not_configured' });
+  });
+
+  // Reporte mensual de costos de IA (por persona, materia y actividad). Se guarda en ai_usage_log. Sin "month" usa el mes en curso (parcial).
+  app.post<{ Body: { month?: string } }>('/internal/dev/utec/ai-report', {
+    logLevel: 'warn', schema: { hide: true, body: { type: 'object', additionalProperties: false, properties: { month: { type: 'string', pattern: '^\\d{4}-(0[1-9]|1[0-2])$' } } } },
+  }, async (request) => {
+    authorizeOperator(request);
+    const start = request.body?.month ? monthStartFromKey(request.body.month)! : monthStart();
+    const report = await writeMonthlyReport(db, start, { capUsd: (homeworkPolicy ?? DEFAULT_HOMEWORK_POLICY).monthlyCapUsd, force: true });
+    return { period: report.period, partial: report.partial, homeworkUsd: report.homeworkUsd, studyGuideUsd: report.studyGuideUsd, remainingUsd: report.remainingUsd, message: report.message };
   });
 
   const routes: Array<[string, ImportMode, string]> = [

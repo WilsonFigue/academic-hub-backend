@@ -39,6 +39,18 @@ export interface AppConfig {
   studyGuideMaxPerRun: number;
   /** Tope de caracteres de material que se envía por guía (~3.5 caracteres por token). */
   studyGuideMaxInputChars: number;
+  /** Tareas con IA (agente con herramientas). Sin HOMEWORK_MODEL usan el mismo modelo y precios que las guías. */
+  homeworkModel: string;
+  homeworkPriceInPerM: number;
+  homeworkPriceOutPerM: number;
+  homeworkMonthlyCapUsd: number;
+  homeworkMaxPerTaskUsd: number;
+  homeworkMaxPerRun: number;
+  homeworkMaxTurns: number;
+  /** Costo estimado de una tarea (USD), solo para decidir cuántas encolar sin pasarse del tope mensual. */
+  homeworkEstimatedCostUsd: number;
+  /** Esfuerzo de razonamiento del agente de tareas: none | low | medium | high. */
+  homeworkReasoning: string;
 }
 
 export class ConfigError extends Error {
@@ -215,6 +227,15 @@ export function readConfig(): AppConfig {
     studyGuideMonthlyCapUsd: decimal('STUDY_GUIDE_MONTHLY_CAP_USD', 5, 0, 1000, problems),
     studyGuideMaxPerRun: int('STUDY_GUIDE_MAX_PER_RUN', 5, 1, 100, problems),
     studyGuideMaxInputChars: int('STUDY_GUIDE_MAX_INPUT_CHARS', 120_000, 5_000, 600_000, problems),
+    homeworkModel: (process.env.HOMEWORK_MODEL ?? '').trim() || (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
+    homeworkPriceInPerM: decimal('HOMEWORK_PRICE_IN_PER_M', decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems), 0, 1000, problems),
+    homeworkPriceOutPerM: decimal('HOMEWORK_PRICE_OUT_PER_M', decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems), 0, 1000, problems),
+    homeworkMonthlyCapUsd: decimal('HOMEWORK_MONTHLY_CAP_USD', 10, 0, 1000, problems),
+    homeworkMaxPerTaskUsd: decimal('HOMEWORK_MAX_PER_TASK_USD', 1.5, 0.01, 100, problems),
+    homeworkMaxPerRun: int('HOMEWORK_MAX_PER_RUN', 5, 1, 100, problems),
+    homeworkMaxTurns: int('HOMEWORK_MAX_TURNS', 8, 2, 30, problems),
+    homeworkEstimatedCostUsd: decimal('HOMEWORK_ESTIMATED_COST_USD', 0.8, 0.01, 100, problems),
+    homeworkReasoning: (process.env.HOMEWORK_REASONING_EFFORT ?? 'medium').trim().toLowerCase(),
   };
   if (config.devOperatorToken && config.devOperatorToken.length < 32) problems.push('DEV_OPERATOR_TOKEN debe tener al menos 32 caracteres.');
   if (config.devOperatorToken && nodeEnv === 'production') problems.push('DEV_OPERATOR_TOKEN no puede definirse en producción.');

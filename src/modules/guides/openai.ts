@@ -4,6 +4,7 @@
 // - El costo real sale de los tokens que reporta la API y de los precios configurados.
 import type { Queryable } from '../../database/connection.js';
 import { GuideError, type GuideContent, type GuideGenerator, type GuideRequest, type GuideResult } from './guides.js';
+import { logAiUsage } from '../logs/logs.js';
 import { gatherMaterial, type FileStore, type Material } from './material.js';
 
 export interface OpenAIOptions {
@@ -114,6 +115,8 @@ export function createOpenAIGenerator(options: OpenAIOptions): OpenAIGenerator {
       const { material, prompt } = await describe(request);
       if (material.docs.length === 0) throw new GuideError('no_material', 'No hay material de la materia relacionado con esta actividad.');
       let response: Response;
+      const started = Date.now();
+      const base = { event: 'call' as const, feature: 'study_guide' as const, runId: request.guideId, enrollmentId: request.enrollmentId, courseId: request.courseId, gradebookColumnId: request.gradebookColumnId, model: options.model, turn: 1 };
       try {
         response = await doFetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
@@ -128,13 +131,15 @@ export function createOpenAIGenerator(options: OpenAIOptions): OpenAIGenerator {
           signal: AbortSignal.timeout(options.timeoutMs ?? 180_000),
         });
       } catch (error) {
-        throw new GuideError((error as Error)?.name === 'TimeoutError' ? 'openai_timeout' : 'openai_network');
+        const code = (error as Error)?.name === 'TimeoutError' ? 'openai_timeout' : 'openai_network';
+        await logAiUsage(options.db, { ...base, durationMs: Date.now() - started, status: 'error', errorCode: code });
+        throw new GuideError(code);
       }
       if (!response.ok) {
-        const code = await response.json().then((body: { error?: { code?: string } }) => body.error?.code ?? '').catch(() => '');
-        if (response.status === 401) throw new GuideError('openai_auth');
-        if (response.status === 429) throw new GuideError(code === 'insufficient_quota' ? 'openai_no_credit' : 'openai_rate_limit');
-        throw new GuideError(response.status >= 500 ? 'openai_unavailable' : `openai_http_${response.status}`);
+        const failure = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } };
+        const code = response.status === 401 ? 'openai_auth' : response.status === 429 ? (failure.error?.code === 'insufficient_quota' ? 'openai_no_credit' : 'openai_rate_limit') : response.status >= 500 ? 'openai_unavailable' : `openai_http_${response.status}`;
+        await logAiUsage(options.db, { ...base, durationMs: Date.now() - started, status: 'error', errorCode: code, detail: { http: response.status, message: failure.error?.message?.slice(0, 300) } });
+        throw new GuideError(code);
       }
       const body = await response.json() as {
         choices?: Array<{ message?: { content?: string | null; refusal?: string | null } }>;
@@ -145,11 +150,11 @@ export function createOpenAIGenerator(options: OpenAIOptions): OpenAIGenerator {
       if (message?.refusal) throw new GuideError('ai_refused');
       const inputTokens = body.usage?.prompt_tokens ?? 0;
       const outputTokens = body.usage?.completion_tokens ?? 0;
+      const costUsd = Math.round(((inputTokens * options.priceInPerM + outputTokens * options.priceOutPerM) / 1_000_000) * 100_000) / 100_000;
+      // Los tokens ya se gastaron aunque la salida no sirva: se registra antes de validarla.
+      await logAiUsage(options.db, { ...base, model: body.model ?? options.model, inputTokens, outputTokens, costUsd, durationMs: Date.now() - started, status: 'ok' });
       const content = parseGuide(message?.content ?? '', material);
-      return {
-        content, model: body.model ?? options.model, inputTokens, outputTokens,
-        costUsd: Math.round(((inputTokens * options.priceInPerM + outputTokens * options.priceOutPerM) / 1_000_000) * 100_000) / 100_000,
-      };
+      return { content, model: body.model ?? options.model, inputTokens, outputTokens, costUsd };
     },
   };
 }

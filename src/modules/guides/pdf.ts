@@ -26,7 +26,7 @@ const isChecklist = (heading: string) => /antes de entregar|lista de verificaci/
 const isMissing = (heading: string) => /no cubre|no cubren/i.test(heading);
 const dateText = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('es-SV', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/El_Salvador' }) : null);
 
-const CSS = `
+export const CSS = `
   @page { size: A4; }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; font-size: 11pt; line-height: 1.55; color: #141a24; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
