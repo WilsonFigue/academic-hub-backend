@@ -10,7 +10,8 @@ async function main(): Promise<void> {
 
   // Las rutas internas de importación solo existen en desarrollo, con token de operador y escuchando en loopback.
   const internalEnabled = config.nodeEnv === 'development' && Boolean(config.devOperatorToken) && Boolean(db) && LOOPBACK_HOSTS.has(config.host);
-  const sessions = internalEnabled && config.credentialsKey
+  // Sesiones de Blackboard para abrir archivos y leer foros con las credenciales recordadas (cifradas con CREDENTIALS_KEY): sirven también en producción.
+  const sessions = db && config.credentialsKey
     ? new (await import('./modules/files/sessions.js')).BlackboardSessions({ db: db!, key: config.credentialsKey, baseUrl: 'https://utecvirtual.blackboard.com', visible: config.scheduledLoginVisible })
     : null;
   // Guías de estudio: con la clave de OpenAI se generan de verdad; sin ella las solicitudes quedan en cola.
@@ -55,18 +56,23 @@ async function main(): Promise<void> {
     guidePolicy,
     forumSuggester,
     forumCapUsd: config.homeworkMonthlyCapUsd,
-    registerInternal: internalEnabled
+    registerInternal: internalEnabled || (config.cronSecret && db)
       ? async (instance) => {
           const { devImportRoutes } = await import('./modules/import/dev-import.routes.js');
-          await instance.register(devImportRoutes, { db: db!, operatorToken: config.devOperatorToken!, passingGradePct: config.passingGradePct,
-            credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible, guideGenerator, guidePolicy, homeworkGenerator, homeworkPolicy });
-          const { emailRoutes } = await import('./modules/notifications/email.routes.js');
-          await instance.register(emailRoutes, { db: db!, operatorToken: config.devOperatorToken!, mailer, capUsd: config.homeworkMonthlyCapUsd, telegram, webUrl });
+          const shared = { db: db!, passingGradePct: config.passingGradePct, credentialsKey: config.credentialsKey, scheduledLoginVisible: config.scheduledLoginVisible, guideGenerator, guidePolicy, homeworkGenerator, homeworkPolicy };
+          if (internalEnabled) {
+            await instance.register(devImportRoutes, { ...shared, operatorToken: config.devOperatorToken! });
+            const { emailRoutes } = await import('./modules/notifications/email.routes.js');
+            await instance.register(emailRoutes, { db: db!, operatorToken: config.devOperatorToken!, mailer, capUsd: config.homeworkMonthlyCapUsd, telegram, webUrl });
+          }
+          // Producción (y desarrollo si hay CRON_SECRET): rutinas por endpoint con clave, sin las que reciben contraseñas.
+          if (config.cronSecret && db) await instance.register(devImportRoutes, { ...shared, mode: 'jobs', cronSecret: config.cronSecret });
         }
       : undefined,
   });
   if (!db) app.log.warn('Sin base de datos configurada: /api/v1 responderá 503.');
   if (internalEnabled) app.log.warn('Rutas /internal/dev habilitadas (solo loopback, requieren DEV_OPERATOR_TOKEN).');
+  if (config.cronSecret && db) app.log.info('Rutinas /jobs habilitadas (requieren CRON_SECRET).');
 
   let stopTelegram: (() => void) | null = null;
   const shutdown = async (signal: string) => {

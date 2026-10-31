@@ -1,0 +1,38 @@
+# Academic Hub · API + HTTPS automático (Caddy). Uso: docker compose up -d --build
+# Variables: .env.production (la API) y .env (solo API_DOMAIN, para Caddy). Ver deploy/README.md.
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    init: true                 # recoge procesos de Chromium que queden colgados
+    shm_size: "1gb"            # memoria compartida que Chromium necesita para armar PDF
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "4000"
+    volumes:
+      - state:/app/.state      # caché de archivos de Blackboard y archivos de trabajo
+      - ./certs:/app/certs:ro  # certificado del servidor de la base de datos (server-ca.pem)
+    ports:
+      - "127.0.0.1:4000:4000"  # solo desde el propio VPS (para las tareas programadas); al público lo atiende Caddy
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?define API_DOMAIN en .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # certificados HTTPS
+      - caddy_config:/config
+
+volumes:
+  state:
+  caddy_data:
+  caddy_config:

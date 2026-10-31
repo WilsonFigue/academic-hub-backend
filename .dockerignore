@@ -1,0 +1,12 @@
+node_modules
+dist
+.state
+.git
+.env
+.env.*
+*.log
+tests
+docs
+artifacts
+sessions
+certs

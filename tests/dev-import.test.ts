@@ -79,3 +79,35 @@ describe('protecciones de /internal/dev/utec (crear usuario, actualización comp
     await production.close();
   });
 });
+
+describe('rutinas de producción /jobs/utec (protegidas con CRON_SECRET)', () => {
+  const SECRET = 'rutinas-secretas-0123456789-abcdefghijklmnop';
+  const auth = { authorization: `Bearer ${SECRET}` };
+  let app: FastifyInstance; let bare: FastifyInstance;
+  const make = async (cronSecret: string | null) => buildApp({
+    config: { ...readConfig(), nodeEnv: 'production' as const }, db: null, logger: false,
+    registerInternal: async (instance) => { await instance.register(devImportRoutes, { db: {} as Database, mode: 'jobs', cronSecret }); },
+  });
+  before(async () => { app = await make(SECRET); bare = await make(null); });
+  after(async () => { await app.close(); await bare.close(); });
+
+  test('sin clave o con clave equivocada → 401; sin CRON_SECRET configurada → 503', async () => {
+    assert.equal((await app.inject({ method: 'POST', url: '/jobs/utec/refresh' })).statusCode, 401);
+    assert.equal((await app.inject({ method: 'POST', url: '/jobs/utec/refresh', headers: { authorization: 'Bearer otra' } })).statusCode, 401);
+    assert.equal((await app.inject({ method: 'GET', url: '/jobs/utec/imports/00000000-0000-4000-8000-000000000000' })).statusCode, 401);
+    assert.equal((await bare.inject({ method: 'POST', url: '/jobs/utec/refresh', headers: auth })).statusCode, 503);
+  });
+
+  test('con la clave correcta la rutina arranca sus comprobaciones (aquí falla por no haber CREDENTIALS_KEY, antes de tocar nada)', async () => {
+    const response = await app.inject({ method: 'POST', url: '/jobs/utec/refresh', headers: auth });
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().error.code, 'credentials_key_missing');
+    assert.equal((await app.inject({ method: 'GET', url: '/jobs/utec/imports/00000000-0000-4000-8000-000000000000', headers: auth })).statusCode, 404);
+  });
+
+  test('en producción NO existen las rutas que reciben contraseñas ni las de desarrollo', async () => {
+    for (const url of ['/jobs/utec/create-user', '/jobs/utec/refresh/full', '/jobs/utec/refresh/daily', '/jobs/utec/calendar/import', '/internal/dev/utec/refresh/stored', '/internal/dev/utec/create-user']) {
+      assert.equal((await app.inject({ method: 'POST', url, headers: auth, payload: body })).statusCode, 404, url);
+    }
+  });
+});

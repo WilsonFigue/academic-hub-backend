@@ -1,0 +1,12 @@
+# Tareas programadas del VPS. Instalar con:  crontab -e   y pegar estas líneas (ajusta /opt/academic-hub a donde esté el proyecto).
+# El VPS usa hora UTC; El Salvador es UTC-6 (sin horario de verano), así que 12:00 UTC = 6:00 a. m. en El Salvador.
+#
+# Los avisos por Telegram y los recordatorios de entrega NO están aquí: el servidor los hace solo (BACKGROUND_JOBS=true).
+
+# m  h   dom mon dow  comando
+0    12  *   *   *    /opt/academic-hub/deploy/run-job.sh /jobs/utec/refresh >> /var/log/academic-hub-jobs.log 2>&1        # 6:00  actualizar desde Blackboard
+15   12  *   *   *    /opt/academic-hub/deploy/run-job.sh /jobs/utec/study-guides >> /var/log/academic-hub-jobs.log 2>&1   # 6:15  guías de estudio (materias activadas)
+30   12  *   *   *    /opt/academic-hub/deploy/run-job.sh /jobs/utec/homework >> /var/log/academic-hub-jobs.log 2>&1       # 6:30  tareas con IA (materias activadas)
+45   12  *   *   *    /opt/academic-hub/deploy/run-job.sh /jobs/utec/calendar >> /var/log/academic-hub-jobs.log 2>&1       # 6:45  reparte actividades en las evaluaciones
+0    13  *   *   *    /opt/academic-hub/deploy/run-job.sh /jobs/email-summary >> /var/log/academic-hub-jobs.log 2>&1       # 7:00  resumen diario por correo
+5    13  *   *   1    /opt/academic-hub/deploy/run-job.sh "/jobs/email-summary?kind=weekly" >> /var/log/academic-hub-jobs.log 2>&1   # lunes 7:05  resumen semanal

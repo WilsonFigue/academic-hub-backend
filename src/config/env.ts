@@ -15,6 +15,8 @@ export interface AppConfig {
   dbPoolMax: number;
   dbSslMode: DbSslMode;
   dbSslCaFile: string | null;
+  /** Nombre con el que se verifica el certificado del servidor si no coincide con el host (p. ej. al conectar por IP a Cloud SQL). Solo con verify-full. */
+  dbSslServername: string | null;
   dbSchema: string;
   frontendOrigin: string;
   sessionTtlDays: number;
@@ -224,6 +226,7 @@ export function readConfig(): AppConfig {
       process.env.TEST_DATABASE_URL?.trim() || (process.env.TEST_DB_NAME?.trim()
         ? databaseUrlFromParts(process.env.TEST_DB_NAME, problems, 'TEST_DB_NAME') : undefined), problems),
     dbSslCaFile: (process.env.DB_SSL_CA_FILE ?? '').trim() || null,
+    dbSslServername: (process.env.DB_SSL_SERVERNAME ?? '').trim() || null,
     dbPoolMax: int('DB_POOL_MAX', 10, 1, 100, problems),
     dbSslMode: sslMode(nodeEnv, problems),
     dbSchema,

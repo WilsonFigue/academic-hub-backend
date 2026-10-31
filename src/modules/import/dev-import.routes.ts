@@ -44,7 +44,15 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
 export interface DevImportOptions {
   db: Database;
-  operatorToken: string;
+  /** Token del operador local (modo dev). */
+  operatorToken?: string;
+  /**
+   * dev (por defecto): rutas /internal/dev/utec/*, solo en desarrollo, desde la misma máquina y con token de operador.
+   * jobs: rutas de producción /jobs/utec/* (actualizar, guías, tareas, calendario, reporte) protegidas con CRON_SECRET; no incluye las que reciben contraseñas.
+   */
+  mode?: 'dev' | 'jobs';
+  /** Clave de las rutinas por endpoint (modo jobs): «Authorization: Bearer …». */
+  cronSecret?: string | null;
   /** Nota mínima (en %) para marcar una materia cerrada como aprobada; sin valor el resultado queda 'unknown'. */
   passingGradePct?: number | null;
   /** Clave de cifrado de las credenciales recordadas; sin ella no se puede recordar ni programar. */
@@ -59,7 +67,7 @@ export interface DevImportOptions {
   homeworkPolicy?: HomeworkPolicy;
 }
 
-export async function devImportRoutes(app: FastifyInstance, { db, operatorToken, passingGradePct = null, credentialsKey = null, scheduledLoginVisible = false, guideGenerator = notConfiguredGenerator, guidePolicy, homeworkGenerator = notConfiguredHomework, homeworkPolicy }: DevImportOptions): Promise<void> {
+export async function devImportRoutes(app: FastifyInstance, { db, operatorToken, mode: routeMode = 'dev', cronSecret = null, passingGradePct = null, credentialsKey = null, scheduledLoginVisible = false, guideGenerator = notConfiguredGenerator, guidePolicy, homeworkGenerator = notConfiguredHomework, homeworkPolicy }: DevImportOptions): Promise<void> {
   /** Tras cada actualización: encola las guías de las materias activadas y las procesa en segundo plano (sin retrasar la actualización). */
   const guidesAfterRefresh = async (userId: string) => {
     try {
@@ -69,7 +77,10 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
   };
 
   const operations = new Map<string, Operation>();
-  const tokenHash = sha256(operatorToken);
+  const tokenHash = operatorToken ? sha256(operatorToken) : null;
+  const cronHash = cronSecret ? sha256(cronSecret) : null;
+  const jobs = routeMode === 'jobs';
+  const at = (dev: string, job: string) => (jobs ? `/jobs/utec/${job}` : `/internal/dev/utec/${dev}`);
   let running: string | null = null;
 
   const sweep = () => {
@@ -77,6 +88,13 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
   };
 
   function authorizeOperator(request: FastifyRequest): void {
+    if (jobs) {
+      if (!cronHash) throw new HttpError(503, 'jobs_not_configured', 'Las rutinas no están configuradas (falta CRON_SECRET).');
+      const match = /^Bearer (.+)$/.exec(String(request.headers.authorization ?? ''));
+      if (!match || !safeEqual(sha256(match[1]!), cronHash)) throw new HttpError(401, 'jobs_unauthorized', 'No autorizado.');
+      return;
+    }
+    if (!tokenHash) throw notFound();
     if (!LOOPBACK.has(request.socket.remoteAddress ?? '')) throw notFound();
     // Un navegador siempre envía Origin en POST: se rechaza para impedir CSRF hacia localhost.
     if (request.headers.origin !== undefined) throw new HttpError(403, 'browser_not_allowed', 'Este endpoint no acepta solicitudes desde navegadores.');
@@ -180,7 +198,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
       }
     })();
 
-    return reply.code(202).send({ operationId: operation.id, status: operation.phase, poll: `/internal/dev/utec/imports/${operation.id}` });
+    return reply.code(202).send({ operationId: operation.id, status: operation.phase, poll: `${at('imports', 'imports')}/${operation.id}` });
   }
 
   /** Actualización diaria con las credenciales recordadas: inicio de sesión sin ventana y sin intentar saltar ningún MFA. */
@@ -218,7 +236,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
 
   // Actualización diaria de todas las cuentas con credenciales recordadas (inicio de sesión sin ventana). Pensada para que un
   // programador externo la dispare; esta API no programa nada por sí sola.
-  app.post('/internal/dev/utec/refresh/stored', {
+  app.post(at('refresh/stored', 'refresh'), {
     logLevel: 'warn', config: { rateLimit: { max: 10, timeWindow: '10 minutes' } }, schema: { hide: true },
   }, async (request, reply) => {
     authorizeOperator(request);
@@ -248,30 +266,32 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
         running = null;
       }
     })();
-    return reply.code(202).send({ operationId: operation.id, status: operation.phase, poll: `/internal/dev/utec/imports/${operation.id}` });
+    return reply.code(202).send({ operationId: operation.id, status: operation.phase, poll: `${at('imports', 'imports')}/${operation.id}` });
   });
 
-  // Calendario académico: una vez al año. Sin "confirm" solo devuelve lo que entendió del instructivo (vista previa).
-  app.post<{ Body: { year: number; confirm?: boolean } }>('/internal/dev/utec/calendar/import', {
-    logLevel: 'warn', config: { rateLimit: { max: 10, timeWindow: '10 minutes' } },
-    schema: { hide: true, body: { type: 'object', additionalProperties: false, required: ['year'], properties: { year: { type: 'integer', minimum: 2020, maximum: 2100 }, confirm: { type: 'boolean' } } } },
-  }, async (request) => {
-    authorizeOperator(request);
-    try {
-      return await importCalendar(db, request.body.year, { confirm: request.body.confirm === true });
-    } catch (error) {
-      throw new HttpError(422, 'calendar_import_failed', (error as Error).message);
-    }
-  });
+  if (!jobs) {
+    // Calendario académico: una vez al año. Sin "confirm" solo devuelve lo que entendió del instructivo (vista previa).
+    app.post<{ Body: { year: number; confirm?: boolean } }>('/internal/dev/utec/calendar/import', {
+      logLevel: 'warn', config: { rateLimit: { max: 10, timeWindow: '10 minutes' } },
+      schema: { hide: true, body: { type: 'object', additionalProperties: false, required: ['year'], properties: { year: { type: 'integer', minimum: 2020, maximum: 2100 }, confirm: { type: 'boolean' } } } },
+    }, async (request) => {
+      authorizeOperator(request);
+      try {
+        return await importCalendar(db, request.body.year, { confirm: request.body.confirm === true });
+      } catch (error) {
+        throw new HttpError(422, 'calendar_import_failed', (error as Error).message);
+      }
+    });
+  }
 
   // Reparte las actividades de cada inscripción en sus evaluaciones según el calendario (sin tocar lo que el estudiante guardó a mano).
-  app.post('/internal/dev/utec/calendar/apply', { logLevel: 'warn', schema: { hide: true } }, async (request) => {
+  app.post(at('calendar/apply', 'calendar'), { logLevel: 'warn', schema: { hide: true } }, async (request) => {
     authorizeOperator(request);
     return applyCalendar(db);
   });
 
   // Rutina de guías de estudio: encola las actividades pendientes de las materias activadas y procesa la cola si hay IA conectada.
-  app.post('/internal/dev/utec/study-guides/run', { logLevel: 'warn', schema: { hide: true } }, async (request) => {
+  app.post(at('study-guides/run', 'study-guides'), { logLevel: 'warn', schema: { hide: true } }, async (request) => {
     authorizeOperator(request);
     const routine = await enqueueRoutine(db, guidePolicy);
     const queue = await processQueue(db, guideGenerator, guidePolicy);
@@ -280,7 +300,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
 
   // Rutina de tareas con IA: encola las actividades pendientes (nunca exámenes) de las materias con la bandera activa y las procesa.
   // Solo la dispara quien llama a este endpoint; nada se programa dentro de la API.
-  app.post('/internal/dev/utec/homework/run', { logLevel: 'warn', schema: { hide: true } }, async (request, reply) => {
+  app.post(at('homework/run', 'homework'), { logLevel: 'warn', schema: { hide: true } }, async (request, reply) => {
     authorizeOperator(request);
     // El mes nuevo empieza de cero solo: antes de trabajar se guarda el reporte de cada mes ya terminado que no lo tenga.
     const capUsd = (homeworkPolicy ?? DEFAULT_HOMEWORK_POLICY).monthlyCapUsd;
@@ -292,7 +312,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
   });
 
   // Reporte mensual de costos de IA (por persona, materia y actividad). Se guarda en ai_usage_log. Sin "month" usa el mes en curso (parcial).
-  app.post<{ Body: { month?: string } }>('/internal/dev/utec/ai-report', {
+  app.post<{ Body: { month?: string } }>(at('ai-report', 'ai-report'), {
     logLevel: 'warn', schema: { hide: true, body: { type: 'object', additionalProperties: false, properties: { month: { type: 'string', pattern: '^\\d{4}-(0[1-9]|1[0-2])$' } } } },
   }, async (request) => {
     authorizeOperator(request);
@@ -301,20 +321,22 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
     return { period: report.period, partial: report.partial, homeworkUsd: report.homeworkUsd, studyGuideUsd: report.studyGuideUsd, remainingUsd: report.remainingUsd, message: report.message };
   });
 
-  const routes: Array<[string, ImportMode, string]> = [
-    ['/internal/dev/utec/create-user', 'onboarding', '5'],
-    ['/internal/dev/utec/refresh/full', 'full', '10'],
-    ['/internal/dev/utec/refresh/daily', 'daily', '30'],
-  ];
-  for (const [path, mode, max] of routes) {
-    app.post<{ Body: { username: string; password: string } }>(path, {
-      logLevel: 'warn',
-      config: { rateLimit: { max: Number(max), timeWindow: '10 minutes' } },
-      schema: { hide: true, body: bodySchema },
-    }, async (request, reply) => launch(request, reply, mode));
+  if (!jobs) {
+    const routes: Array<[string, ImportMode, string]> = [
+      ['/internal/dev/utec/create-user', 'onboarding', '5'],
+      ['/internal/dev/utec/refresh/full', 'full', '10'],
+      ['/internal/dev/utec/refresh/daily', 'daily', '30'],
+    ];
+    for (const [path, mode, max] of routes) {
+      app.post<{ Body: { username: string; password: string } }>(path, {
+        logLevel: 'warn',
+        config: { rateLimit: { max: Number(max), timeWindow: '10 minutes' } },
+        schema: { hide: true, body: bodySchema },
+      }, async (request, reply) => launch(request, reply, mode));
+    }
   }
 
-  app.get<{ Params: { operationId: string } }>('/internal/dev/utec/imports/:operationId', {
+  app.get<{ Params: { operationId: string } }>(`${at('imports', 'imports')}/:operationId`, {
     logLevel: 'warn',
     schema: {
       hide: true,

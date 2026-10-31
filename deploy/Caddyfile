@@ -1,0 +1,10 @@
+# Caddy saca y renueva solo el certificado HTTPS (Let's Encrypt) del dominio indicado en API_DOMAIN.
+{$API_DOMAIN} {
+	encode gzip
+	# Las peticiones de IA pueden tardar: se les da margen antes de cortarlas.
+	reverse_proxy api:4000 {
+		transport http {
+			response_header_timeout 300s
+		}
+	}
+}

@@ -8,3 +8,6 @@ coverage/
 artifacts/
 .state/
 sessions/
+
+# Despliegue: certificado del servidor de base de datos
+certs/

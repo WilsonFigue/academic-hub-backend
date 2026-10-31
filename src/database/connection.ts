@@ -64,7 +64,7 @@ function sslOptions(config: AppConfig): pg.PoolConfig['ssl'] {
   if (config.dbSslMode === 'disable') return undefined;
   const ca = config.dbSslCaFile ? { ca: readFileSync(config.dbSslCaFile, 'utf8') } : {};
   if (config.dbSslMode === 'require') return { rejectUnauthorized: false, ...ca };
-  return { rejectUnauthorized: true, ...ca };
+  return { rejectUnauthorized: true, ...ca, ...(config.dbSslServername ? { servername: config.dbSslServername } : {}) };
 }
 
 export function createDatabase(config: AppConfig, connectionString: string, overrides: { max?: number } = {}): Database {
