@@ -7,6 +7,7 @@ import { safeEqual, sha256 } from '../../shared/crypto.js';
 import { HttpError, notFound } from '../../shared/errors.js';
 import { createBlackboardGateway, SessionExpiredError } from '../blackboard/gateway.js';
 import { LoginError, loginInteractively } from '../blackboard/session-login.js';
+import { loginStored } from '../blackboard/stored-login.js';
 import { loadCredentials, markCredentialUse, saveCredentials } from '../credentials/vault.js';
 import { applyCalendar, importCalendar } from '../calendar/calendar.service.js';
 import { enqueueRoutine, notConfiguredGenerator, processQueue, type GuideGenerator, type GuidePolicy } from '../guides/guides.js';
@@ -193,7 +194,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
         const credentials = credentialsKey ? await loadCredentials(db, credentialsKey, account.accountId) : null;
         if (!credentials) throw new ImportError('credentials_unreadable', 'No se pueden descifrar las credenciales recordadas.');
         onPhase('authenticating');
-        captured = await loginInteractively(UTEC.lmsBaseUrl, credentials, () => {}, { headless: !scheduledLoginVisible, timeoutMs: 120_000, failOnMfa: true });
+        captured = await loginStored(UTEC.lmsBaseUrl, credentials, { headless: !scheduledLoginVisible, timeoutMs: 120_000, failOnMfa: true });
         onPhase('extracting');
         const session = captured;
         const summary = await importStudent(db, createBlackboardGateway(captured.transport), onPhase, {

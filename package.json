@@ -23,7 +23,8 @@
     "refresh:daily": "tsx scripts/refresh.ts daily",
     "credentials": "tsx scripts/credentials.ts",
     "homework:flag": "tsx scripts/homework-flag.ts",
-    "instructors": "tsx scripts/fetch-instructors.ts"
+    "instructors": "tsx scripts/fetch-instructors.ts",
+    "homework:backfill": "tsx scripts/homework-backfill.ts"
   },
   "license": "UNLICENSED",
   "type": "module",

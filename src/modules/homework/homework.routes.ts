@@ -1,9 +1,8 @@
-import { readFileSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import type { Database } from '../../database/connection.js';
 import { HttpError } from '../../shared/errors.js';
 import { currentSession, requireAuth } from '../auth/auth.guard.js';
-import { getDeliverablePath, getHomework, listSettings, setEnabled } from './homework.js';
+import { getDeliverable, getHomework, listSettings, setEnabled } from './homework.js';
 
 const uuidParam = { type: 'object', required: ['id'], additionalProperties: false, properties: { id: { type: 'string', format: 'uuid' } } } as const;
 const MIME = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ggb: 'application/vnd.geogebra.file' } as const;
@@ -32,11 +31,9 @@ export async function homeworkRoutes(app: FastifyInstance, { db }: { db: Databas
     preHandler: auth,
     schema: { tags: ['homework'], params: { type: 'object', required: ['id', 'name'], additionalProperties: false, properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string', minLength: 1, maxLength: 200 } } } },
   }, async (request, reply) => {
-    const file = await getDeliverablePath(db, userId(request), request.params.id, request.params.name);
-    let bytes: Buffer;
-    try { bytes = readFileSync(file.path); } catch { throw new HttpError(404, 'not_found', 'Recurso no encontrado.'); }
-    return reply.header('Content-Type', MIME[file.kind]).header('X-Content-Type-Options', 'nosniff').header('Cache-Control', 'private, no-store')
-      .header('Content-Disposition', `${file.kind === 'pdf' ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(request.params.name)}`)
+    const { bytes, kind } = await getDeliverable(db, userId(request), request.params.id, request.params.name);
+    return reply.header('Content-Type', MIME[kind]).header('X-Content-Type-Options', 'nosniff').header('Cache-Control', 'private, no-store')
+      .header('Content-Disposition', `${kind === 'pdf' ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(request.params.name)}`)
       .header('Content-Length', bytes.length).send(bytes);
   });
 }

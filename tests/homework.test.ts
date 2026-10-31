@@ -174,4 +174,22 @@ describe('tareas con IA: reglas, cola y rutina (PostgreSQL real)', { skip: !test
     assert.equal((await alice.request('GET', `/api/v1/activities/${activityId}/homework/files/otro.pdf`)).statusCode, 404);
     assert.equal((await alice.request('GET', `/api/v1/activities/${ids.examen}/homework`)).json().eligible, false);
   });
+
+  test('los archivos de la tarea viven en la base de datos: se descargan aunque el disco se borre; los que solo están en disco se pasan a la base al pedirlos', async () => {
+    const stored = await ctx.db.query<{ n: number }>(`SELECT length(content)::int AS n FROM homework_files`);
+    assert.deepEqual(stored.rows.map((r) => r.n), [4], 'al quedar lista, el archivo pasó a la base');
+    const state = (await alice.request('GET', `/api/v1/activities/${ids.guia}/homework`)).json() as { homework: { status: string } | null };
+    const activityId = state.homework?.status === 'ready' ? ids.guia : ids.tarea;
+    const url = `/api/v1/activities/${activityId}/homework/files/tarea.pdf`;
+    for (const id of createdRuns) rmSync(join(HOMEWORK_DIR, id), { recursive: true, force: true });
+    const fromDb = await alice.request('GET', url);
+    assert.equal(fromDb.statusCode, 200); assert.equal(fromDb.body, '%PDF', 'sale de la base aunque el disco ya no tenga nada');
+    // Tarea anterior a este cambio: el archivo solo está en disco y la base no lo tiene.
+    const runId = createdRuns[0]!;
+    await ctx.db.query(`DELETE FROM homework_files`);
+    mkdirSync(join(HOMEWORK_DIR, runId), { recursive: true }); writeFileSync(join(HOMEWORK_DIR, runId, 'tarea.pdf'), '%PDF');
+    assert.equal((await alice.request('GET', url)).statusCode, 200);
+    assert.equal((await ctx.db.query(`SELECT 1 FROM homework_files WHERE run_id = $1`, [runId])).rowCount, 1, 'al pedirlo se guardó en la base');
+    assert.equal((await bob.request('GET', url)).statusCode, 404, 'otro usuario sigue sin acceso');
+  });
 });

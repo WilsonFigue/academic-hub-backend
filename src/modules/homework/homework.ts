@@ -7,6 +7,7 @@
 //  R4     La rutina se dispara por un endpoint interno; esta API no programa nada.
 //  R5     Una sola tarea por actividad.
 //  R6     Solo lectura en Blackboard: el agente nunca entrega nada.
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database, Queryable } from '../../database/connection.js';
 import { notFound } from '../../shared/errors.js';
@@ -127,15 +128,55 @@ export async function getHomework(db: Queryable, userId: string, activityId: str
   return { activityId, courseEnabled: activity.courseEnabled, eligible: eligibility.kind === 'activity', pending, homework: rows[0] ? toView(rows[0]) : null };
 }
 
-/** Ruta del archivo de una tarea lista; 404 si no es del usuario o no está en la lista de entregables. */
-export async function getDeliverablePath(db: Queryable, userId: string, activityId: string, name: string): Promise<{ path: string; kind: Deliverable['kind'] }> {
+/**
+ * Guarda en la base de datos los archivos que una corrida dejó en disco, para que la tarea sobreviva aunque el disco se borre
+ * (cambio de servidor, hosting sin disco permanente). Lo que ya no esté en la lista de entregables se quita.
+ */
+export async function saveDeliverableFiles(db: Queryable, runId: string, deliverables: Deliverable[]): Promise<number> {
+  let saved = 0;
+  for (const file of deliverables) {
+    let bytes: Buffer;
+    try { bytes = readFileSync(join(HOMEWORK_DIR, runId, file.name)); } catch { continue; }
+    await db.query(
+      `INSERT INTO homework_files (run_id, name, kind, content) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (run_id, name) DO UPDATE SET kind = EXCLUDED.kind, content = EXCLUDED.content, created_at = now()`, [runId, file.name, file.kind, bytes]);
+    saved += 1;
+  }
+  await db.query(`DELETE FROM homework_files WHERE run_id = $1 AND NOT (name = ANY($2::text[]))`, [runId, deliverables.map((d) => d.name)]);
+  return saved;
+}
+
+/** Pasa a la base los archivos de tareas listas que solo existen en disco (tareas anteriores a este cambio). */
+export async function backfillHomeworkFiles(db: Queryable): Promise<{ runs: number; files: number; missing: number }> {
+  const { rows } = await db.query<{ id: string; deliverables: Deliverable[] }>(
+    `SELECT h.id, h.deliverables FROM homework_runs h WHERE h.status = 'ready' AND jsonb_typeof(h.deliverables) = 'array' AND jsonb_array_length(h.deliverables) > 0`);
+  let files = 0; let missing = 0; let runs = 0;
+  for (const run of rows) {
+    const have = new Set((await db.query<{ name: string }>(`SELECT name FROM homework_files WHERE run_id = $1`, [run.id])).rows.map((r) => r.name));
+    if (run.deliverables.every((d) => have.has(d.name))) continue;
+    runs += 1;
+    files += await saveDeliverableFiles(db, run.id, run.deliverables);
+    const after = new Set((await db.query<{ name: string }>(`SELECT name FROM homework_files WHERE run_id = $1`, [run.id])).rows.map((r) => r.name));
+    missing += run.deliverables.filter((d) => !after.has(d.name)).length;   // listados pero sin archivo en disco ni en la base
+  }
+  return { runs, files, missing };
+}
+
+/** Archivo de una tarea lista (solo del dueño y solo si está en la lista de entregables). Sale de la base; si aún solo está en disco, se pasa a la base al pedirlo. */
+export async function getDeliverable(db: Queryable, userId: string, activityId: string, name: string): Promise<{ bytes: Buffer; kind: Deliverable['kind'] }> {
   const activity = await ownActivity(db, userId, activityId);
   if (!activity) throw notFound();
   const { rows } = await db.query<{ id: string; deliverables: Deliverable[] }>(
     `SELECT id, deliverables FROM homework_runs WHERE enrollment_id = $1 AND gradebook_column_id = $2 AND status = 'ready'`, [activity.enrollmentId, activity.gradebookColumnId]);
   const run = rows[0]; const file = run?.deliverables.find((d) => d.name === name);
   if (!run || !file) throw notFound();
-  return { path: join(HOMEWORK_DIR, run.id, file.name), kind: file.kind };
+  const stored = await db.query<{ content: Buffer }>(`SELECT content FROM homework_files WHERE run_id = $1 AND name = $2`, [run.id, file.name]);
+  if (stored.rows[0]) return { bytes: stored.rows[0].content, kind: file.kind };
+  let bytes: Buffer;
+  try { bytes = readFileSync(join(HOMEWORK_DIR, run.id, file.name)); } catch { throw notFound(); }
+  await db.query(
+    `INSERT INTO homework_files (run_id, name, kind, content) VALUES ($1, $2, $3, $4) ON CONFLICT (run_id, name) DO NOTHING`, [run.id, file.name, file.kind, bytes]).catch(() => {});
+  return { bytes, kind: file.kind };
 }
 
 /**
@@ -248,6 +289,8 @@ async function processLocked(db: Database, generator: HomeworkGenerator, policy:
         `UPDATE homework_runs SET status = 'ready', deliverables = $2, summary = $3, report = $4, model = $5, input_tokens = $6, output_tokens = $7, cost_usd = $8, error_code = NULL, finished_at = now() WHERE id = $1`,
         [row.id, JSON.stringify(result.deliverables), result.summary, JSON.stringify(result.report), result.model, result.inputTokens, result.outputTokens, result.costUsd]);
       summary.ready += 1;
+      // Los archivos pasan a la base de datos; si falla, se reintenta al pedirlos (lectura desde disco).
+      await saveDeliverableFiles(db, row.id, result.deliverables).catch(() => 0);
       await notifyHomeworkReady(db, row.id).catch(() => {});
       await logAiUsage(db, { event: 'run_finished', feature: 'homework', runId: row.id, enrollmentId: row.enrollment_id, courseId: row.course_id, gradebookColumnId: row.gradebook_column_id, model: result.model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: 0, status: 'ok',
         message: `Tarea lista: ${result.deliverables.length} archivo(s), ${result.report.turns} turno(s), USD ${result.costUsd.toFixed(4)}.`, detail: { totalCostUsd: result.costUsd, budgetUsd, deliverables: result.deliverables, tools: result.report.tools, warnings: result.report.warnings, placeholders: result.report.placeholders.length } });

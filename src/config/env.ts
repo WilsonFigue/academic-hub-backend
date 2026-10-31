@@ -37,6 +37,8 @@ export interface AppConfig {
   mailFromName: string;
   /** Token del bot de Telegram (BotFather) para los avisos por Telegram; sin él no se manda nada. */
   telegramBotToken: string | null;
+  /** Clave de las rutinas por endpoint (/jobs/*): el programador de tareas la manda como «Authorization: Bearer …». Mínimo 32 caracteres. */
+  cronSecret: string | null;
   openaiModel: string;
   /** Precios en USD por millón de tokens (para calcular el costo de cada guía y respetar el tope mensual). */
   openaiPriceInPerM: number;
@@ -237,6 +239,7 @@ export function readConfig(): AppConfig {
     mailchimpListId: (process.env.MAILCHIMP_LIST_ID ?? '').trim() || null,
     mailFromName: (process.env.MAIL_FROM_NAME ?? 'Academic Hub').trim() || 'Academic Hub',
     telegramBotToken: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim() || null,
+    cronSecret: (process.env.CRON_SECRET ?? '').trim() || null,
     openaiModel: (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
     openaiPriceInPerM: decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems),
     openaiPriceOutPerM: decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems),
@@ -257,6 +260,7 @@ export function readConfig(): AppConfig {
     homeworkEstimatedCostUsd: decimal('HOMEWORK_ESTIMATED_COST_USD', 0.8, 0.01, 100, problems),
     homeworkReasoning: (process.env.HOMEWORK_REASONING_EFFORT ?? 'medium').trim().toLowerCase(),
   };
+  if (config.cronSecret && config.cronSecret.length < 32) problems.push('CRON_SECRET debe tener al menos 32 caracteres.');
   if (config.devOperatorToken && config.devOperatorToken.length < 32) problems.push('DEV_OPERATOR_TOKEN debe tener al menos 32 caracteres.');
   if (config.devOperatorToken && nodeEnv === 'production') problems.push('DEV_OPERATOR_TOKEN no puede definirse en producción.');
   if (!config.blackboardReadOnly) problems.push('BLACKBOARD_READ_ONLY debe permanecer en true en esta fase.');

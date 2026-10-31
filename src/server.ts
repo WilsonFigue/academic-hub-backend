@@ -45,6 +45,9 @@ async function main(): Promise<void> {
     config,
     db,
     telegram,
+    mailer,
+    cronSecret: config.cronSecret,
+    webUrl,
     blackboardSessions: sessions,
     guideGenerator,
     guidePolicy,
@@ -63,10 +66,8 @@ async function main(): Promise<void> {
   if (!db) app.log.warn('Sin base de datos configurada: /api/v1 responderá 503.');
   if (internalEnabled) app.log.warn('Rutas /internal/dev habilitadas (solo loopback, requieren DEV_OPERATOR_TOKEN).');
 
-  let stopTelegram: (() => void) | null = null;
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'Cerrando servidor');
-    stopTelegram?.();
     await app.close();
     await db?.close();
     process.exit(0);
@@ -75,11 +76,6 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   await app.listen({ port: config.port, host: config.host });
-  if (db && telegram.configured) {
-    const { startTelegramLoops } = await import('./modules/notifications/telegram-service.js');
-    stopTelegram = startTelegramLoops(db, telegram, { webUrl, onError: (error) => app.log.warn({ err: { name: (error as Error)?.name, code: (error as { code?: string })?.code } }, 'telegram loop') });
-    app.log.info('Avisos por Telegram activos.');
-  }
 }
 
 main().catch((error: unknown) => {

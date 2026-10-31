@@ -36,6 +36,7 @@ describe('Telegram: vincular, mandar y respetar el silencio (PostgreSQL real)', 
     async username() { return 'academic_test_bot'; },
     async sendMessage(chat, text) { if (blocked) throw new TelegramError('telegram_blocked', 403); outbox.push({ chat, text }); },
     async getUpdates() { return []; },
+    async setWebhook() {}, async deleteWebhook() {}, webhookSecret() { return 'secreto-de-prueba'; },
   };
   const say = (chat: number, text: string): TelegramUpdate => ({ update_id: 1, message: { chat: { id: chat, type: 'private', username: 'persona' }, text } });
   const push = (user: string, kind: Parameters<typeof notify>[1]['kind'], title: string, key: string) => notify(ctx.db, { userId: user, kind, title, body: 'Física III', dedupeKey: key, link: '/activities' });

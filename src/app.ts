@@ -15,6 +15,8 @@ import { homeworkRoutes } from './modules/homework/homework.routes.js';
 import { forumsRoutes } from './modules/forums/forums.routes.js';
 import { notificationsRoutes } from './modules/notifications/notifications.routes.js';
 import type { TelegramClient } from './modules/notifications/telegram.js';
+import { jobsRoutes } from './modules/notifications/jobs.routes.js';
+import { notConfiguredMailer, type Mailer } from './modules/notifications/mailer.js';
 import { notConfiguredSuggester, type ForumSuggester } from './modules/forums/suggest.js';
 import { notConfiguredGenerator, type GuideGenerator, type GuidePolicy } from './modules/guides/guides.js';
 import { filesRoutes } from './modules/files/files.routes.js';
@@ -42,9 +44,14 @@ export interface BuildAppOptions {
   forumCapUsd?: number;
   /** Cliente de Telegram para vincular el chat y mandar pruebas. Sin él, la vinculación avisa que no está configurado. */
   telegram?: TelegramClient;
+  /** Correo de resumen (Mailchimp) y clave de las rutinas por endpoint (/jobs/*); sin clave esas rutas responden 503. */
+  mailer?: Mailer;
+  cronSecret?: string | null;
+  /** Dirección pública de la web (para el enlace «Abrir en Academic Hub» de los avisos). */
+  webUrl?: string | null;
 }
 
-export async function buildApp({ config, db, logger = true, registerInternal, blackboardSessions = null, guideGenerator = notConfiguredGenerator, guidePolicy, forumSuggester = notConfiguredSuggester, forumCapUsd = 10, telegram }: BuildAppOptions): Promise<FastifyInstance> {
+export async function buildApp({ config, db, logger = true, registerInternal, blackboardSessions = null, guideGenerator = notConfiguredGenerator, guidePolicy, forumSuggester = notConfiguredSuggester, forumCapUsd = 10, telegram, mailer = notConfiguredMailer, cronSecret = null, webUrl = null }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger
       ? {
@@ -120,6 +127,7 @@ export async function buildApp({ config, db, logger = true, registerInternal, bl
   });
 
   await app.register(healthRoutes, { db });
+  if (db) await app.register(jobsRoutes, { db, cronSecret, mailer, telegram, capUsd: forumCapUsd, webUrl });
   app.get('/openapi.json', { schema: { hide: true } }, async () => app.swagger());
 
   await app.register(async (api) => {

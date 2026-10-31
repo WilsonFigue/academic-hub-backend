@@ -1,9 +1,11 @@
-// Cliente mínimo de la API de bots de Telegram (solo lo que usamos): getMe, sendMessage y getUpdates.
+// Cliente mínimo de la API de bots de Telegram (solo lo que usamos): getMe, sendMessage, getUpdates y webhook.
 // El token va en la URL, así que nunca se registra ni se devuelve en errores.
+import { createHash } from 'node:crypto';
 
 export class TelegramError extends Error {
   constructor(readonly code: string, readonly status: number | null = null, message?: string) { super(message ?? code); this.name = 'TelegramError'; }
 }
+
 
 export interface TelegramUpdate { update_id: number; message?: { chat: { id: number; type: string; username?: string; first_name?: string }; text?: string } }
 
@@ -13,6 +15,11 @@ export interface TelegramClient {
   username(): Promise<string | null>;
   sendMessage(chatId: number, html: string): Promise<void>;
   getUpdates(offset: number, timeoutSeconds: number): Promise<TelegramUpdate[]>;
+  /** Registra la URL a la que Telegram avisa de cada mensaje (con el secreto que Telegram reenvía en una cabecera). */
+  setWebhook(url: string): Promise<void>;
+  deleteWebhook(): Promise<void>;
+  /** Secreto derivado del token para verificar que el webhook viene de Telegram; vacío si no hay bot. */
+  webhookSecret(): string;
 }
 
 export const notConfiguredTelegram: TelegramClient = {
@@ -20,6 +27,9 @@ export const notConfiguredTelegram: TelegramClient = {
   async username() { return null; },
   async sendMessage() { throw new TelegramError('telegram_not_configured'); },
   async getUpdates() { return []; },
+  async setWebhook() { throw new TelegramError('telegram_not_configured'); },
+  async deleteWebhook() { throw new TelegramError('telegram_not_configured'); },
+  webhookSecret() { return ''; },
 };
 
 export function createTelegramClient(options: { token: string; fetchFn?: typeof fetch }): TelegramClient {
@@ -27,6 +37,7 @@ export function createTelegramClient(options: { token: string; fetchFn?: typeof 
   const doFetch = options.fetchFn ?? fetch;
   const base = `https://api.telegram.org/bot${options.token}`;
   let cachedName: string | null = null;
+  const webhookSecret = createHash('sha256').update(`ah-webhook:${options.token}`).digest('hex');
 
   async function call<T>(method: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
     let response: Response;
@@ -57,5 +68,12 @@ export function createTelegramClient(options: { token: string; fetchFn?: typeof 
     async getUpdates(offset, timeoutSeconds) {
       return call<TelegramUpdate[]>('getUpdates', { offset, timeout: timeoutSeconds, allowed_updates: ['message'] });
     },
+    async setWebhook(url) {
+      await call('setWebhook', { url, secret_token: webhookSecret, allowed_updates: ['message'] });
+    },
+    async deleteWebhook() {
+      await call('deleteWebhook', {});
+    },
+    webhookSecret() { return webhookSecret; },
   };
 }

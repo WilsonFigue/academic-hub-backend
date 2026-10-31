@@ -2,7 +2,8 @@
 // y la sesión se conserva SOLO EN MEMORIA unos minutos (nunca se escribe a disco) para no repetir el inicio de sesión en cada archivo.
 import type { Database } from '../../database/connection.js';
 import { HttpError } from '../../shared/errors.js';
-import { LoginError, loginInteractively, type CapturedSession } from '../blackboard/session-login.js';
+import { LoginError, type CapturedSession } from '../blackboard/session-login.js';
+import { loginStored } from '../blackboard/stored-login.js';
 import { loadCredentials } from '../credentials/vault.js';
 
 const IDLE_MS = 15 * 60_000;
@@ -50,7 +51,7 @@ export class BlackboardSessions {
     const credentials = await loadCredentials(this.options.db, this.options.key, accountId);
     if (!credentials) throw new HttpError(503, 'no_stored_credentials', 'Para abrir archivos por primera vez hacen falta las credenciales recordadas (npm run refresh:full → responde "s").');
     try {
-      const session = await loginInteractively(this.options.baseUrl, credentials, () => {}, { headless: !this.options.visible, timeoutMs: 120_000, failOnMfa: true });
+      const session = await loginStored(this.options.baseUrl, credentials, { headless: !this.options.visible, timeoutMs: 120_000, failOnMfa: true });
       this.touch(accountId, session);
       return session;
     } catch (error) {

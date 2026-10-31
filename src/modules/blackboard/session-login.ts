@@ -8,7 +8,7 @@ import type { BlackboardTransport } from './gateway.js';
 export type LoginPhase = 'authenticating' | 'awaiting_mfa';
 
 export class LoginError extends Error {
-  constructor(readonly code: 'login_timeout' | 'login_not_ultra' | 'browser_failed' | 'mfa_required', message: string) {
+  constructor(readonly code: 'login_timeout' | 'login_not_ultra' | 'browser_failed' | 'mfa_required' | 'invalid_credentials' | 'login_unexpected', message: string) {
     super(message);
     this.name = 'LoginError';
   }
@@ -72,10 +72,7 @@ export async function loginInteractively(
   options: LoginOptions = {},
 ): Promise<CapturedSession> {
   const { chromium } = await import('playwright');
-  const sdk = await import('blackboard-mcp');
-  delete process.env.BLACKBOARD_MCP_ALLOW_WRITES;
-  delete process.env.BLACKBOARD_COOKIE;
-  sdk.setLogLevel('error');
+  const sdk = await loadSdk();
 
   const baseHost = new URL(baseUrl).hostname;
   const executablePath = resolveChromiumExecutable(chromium);
@@ -126,73 +123,90 @@ export async function loginInteractively(
       host: cookie.domain, name: cookie.name, value: cookie.value, path: cookie.path,
       secure: cookie.secure, httpOnly: cookie.httpOnly, expires: cookie.expires > 0 ? cookie.expires * 1_000 : 0,
     }));
-    const imported = await sdk.Session.fromBrowserCookies(baseUrl, cookies, { userAgent: sdk.DEFAULT_USER_AGENT });
-
-    class MemoryOnlySession extends sdk.Session {
-      override async persist(): Promise<void> {
-        // Nunca persistir la sesión de Blackboard.
-      }
-    }
-    const session = new MemoryOnlySession(imported.baseUrl, imported.jar, imported.xsrfToken, imported.userAgent, imported.capturedAt, imported.user, []);
-    const config = sdk.ConfigSchema.parse({
-      baseUrl, label: 'Academic Hub dev import', pageSize: 100, maxDownloadBytes: 1_024, // mínimo aceptado por el SDK; no se descargan archivos
-      downloadDir: join(process.cwd(), '.state', 'downloads-disabled'), allowWrites: false, extraHosts: [],
-    });
-    const http: InstanceType<typeof sdk.HttpClient> | null = new sdk.HttpClient(session, config);
-    let disposed = false;
-
-    const transport: BlackboardTransport = {
-      async get(path, query) {
-        if (disposed || !http) throw new Error('Sesión descartada.');
-        try {
-          // Solo GET; sin renovación SSO (UTEC usa login nativo + MFA, no hay IdP).
-          const response = await http.request({ path, query, retries: 1, allowRefresh: false, allowNotFound: true });
-          if (response.status === 404 || response.status === 204) return { status: response.status, body: null };
-          const text = await response.body.text();
-          return { status: response.status, body: text ? JSON.parse(text) : null };
-        } catch (error) {
-          if (error instanceof sdk.BlackboardError) {
-            if (error.code === 'SESSION_EXPIRED' || error.code === 'NOT_AUTHENTICATED') return { status: 401, body: null };
-            return { status: error.status ?? 0, body: null };
-          }
-          return { status: 0, body: null };
-        }
-      },
-    };
-    const ID = /^_\d{1,12}_\d{1,4}$/;
-    return {
-      transport,
-      async download(path) {
-        if (disposed || !http) throw new Error('Sesión descartada.');
-        // Solo rutas de archivos de la propia instancia.
-        if (!path.startsWith('/bbcswebdav/')) throw new Error('Ruta de archivo no permitida.');
-        const response = await http.request({ path, timeoutMs: 120_000, retries: 1, allowRefresh: false, allowNotFound: true });
-        return {
-          status: response.status, contentType: (response.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim(),
-          contentLength: Number(response.headers.get('content-length') ?? '') || null, body: response.body.body,
-        };
-      },
-      async markReviewed(courseExternalId, contentExternalId, reviewed) {
-        if (disposed || !http) throw new Error('Sesión descartada.');
-        if (!ID.test(courseExternalId) || !ID.test(contentExternalId)) throw new Error('Identificador de Blackboard no válido.');
-        try {
-          const response = await http.request({
-            method: 'PATCH', path: `/learn/api/v1/courses/${courseExternalId}/contents/${contentExternalId}/states/me`, body: { reviewed },
-            headers: { 'Content-Type': 'application/json;charset=UTF-8' }, retries: 0, allowRefresh: false, allowNotFound: true, forceAllowWrite: true,
-          });
-          await response.body.body?.cancel().catch(() => {});
-          return { status: response.status };
-        } catch (error) {
-          if (error instanceof sdk.BlackboardError) return { status: error.status ?? 0 };
-          return { status: 0 };
-        }
-      },
-      dispose() {
-        disposed = true;
-        void session.jar.removeAllCookies().catch(() => {});
-      },
-    };
+    return buildCapturedSession(sdk, baseUrl, cookies);
   } finally {
     await browser.close().catch(() => {});
   }
+}
+
+export type SdkModule = typeof import('blackboard-mcp');
+export interface SessionCookie { host: string; name: string; value: string; path: string; secure: boolean; httpOnly: boolean; expires: number }
+
+/** Carga el SDK de Blackboard en modo solo lectura (sin escrituras ni cookies heredadas del entorno). */
+export async function loadSdk(): Promise<SdkModule> {
+  const sdk = await import('blackboard-mcp');
+  delete process.env.BLACKBOARD_MCP_ALLOW_WRITES;
+  delete process.env.BLACKBOARD_COOKIE;
+  sdk.setLogLevel('error');
+  return sdk;
+}
+
+/** Convierte las cookies del host de Blackboard (de un navegador o de un login por HTTP) en una sesión de solo lectura que vive en memoria. */
+export async function buildCapturedSession(sdk: SdkModule, baseUrl: string, cookies: SessionCookie[]): Promise<CapturedSession> {
+  const imported = await sdk.Session.fromBrowserCookies(baseUrl, cookies, { userAgent: sdk.DEFAULT_USER_AGENT });
+
+  class MemoryOnlySession extends sdk.Session {
+    override async persist(): Promise<void> {
+      // Nunca persistir la sesión de Blackboard.
+    }
+  }
+  const session = new MemoryOnlySession(imported.baseUrl, imported.jar, imported.xsrfToken, imported.userAgent, imported.capturedAt, imported.user, []);
+  const config = sdk.ConfigSchema.parse({
+    baseUrl, label: 'Academic Hub dev import', pageSize: 100, maxDownloadBytes: 1_024, // mínimo aceptado por el SDK; no se descargan archivos
+    downloadDir: join(process.cwd(), '.state', 'downloads-disabled'), allowWrites: false, extraHosts: [],
+  });
+  const http: InstanceType<typeof sdk.HttpClient> | null = new sdk.HttpClient(session, config);
+  let disposed = false;
+
+  const transport: BlackboardTransport = {
+    async get(path, query) {
+      if (disposed || !http) throw new Error('Sesión descartada.');
+      try {
+        // Solo GET; sin renovación SSO (UTEC usa login nativo + MFA, no hay IdP).
+        const response = await http.request({ path, query, retries: 1, allowRefresh: false, allowNotFound: true });
+        if (response.status === 404 || response.status === 204) return { status: response.status, body: null };
+        const text = await response.body.text();
+        return { status: response.status, body: text ? JSON.parse(text) : null };
+      } catch (error) {
+        if (error instanceof sdk.BlackboardError) {
+          if (error.code === 'SESSION_EXPIRED' || error.code === 'NOT_AUTHENTICATED') return { status: 401, body: null };
+          return { status: error.status ?? 0, body: null };
+        }
+        return { status: 0, body: null };
+      }
+    },
+  };
+  const ID = /^_\d{1,12}_\d{1,4}$/;
+  return {
+    transport,
+    async download(path) {
+      if (disposed || !http) throw new Error('Sesión descartada.');
+      // Solo rutas de archivos de la propia instancia.
+      if (!path.startsWith('/bbcswebdav/')) throw new Error('Ruta de archivo no permitida.');
+      const response = await http.request({ path, timeoutMs: 120_000, retries: 1, allowRefresh: false, allowNotFound: true });
+      return {
+        status: response.status, contentType: (response.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim(),
+        contentLength: Number(response.headers.get('content-length') ?? '') || null, body: response.body.body,
+      };
+    },
+    async markReviewed(courseExternalId, contentExternalId, reviewed) {
+      if (disposed || !http) throw new Error('Sesión descartada.');
+      if (!ID.test(courseExternalId) || !ID.test(contentExternalId)) throw new Error('Identificador de Blackboard no válido.');
+      try {
+        const response = await http.request({
+          method: 'PATCH', path: `/learn/api/v1/courses/${courseExternalId}/contents/${contentExternalId}/states/me`, body: { reviewed },
+          headers: { 'Content-Type': 'application/json;charset=UTF-8' }, retries: 0, allowRefresh: false, allowNotFound: true, forceAllowWrite: true,
+        });
+        await response.body.body?.cancel().catch(() => {});
+        return { status: response.status };
+      } catch (error) {
+        if (error instanceof sdk.BlackboardError) return { status: error.status ?? 0 };
+        return { status: 0 };
+      }
+    },
+    dispose() {
+      disposed = true;
+      void session.jar.removeAllCookies().catch(() => {});
+    },
+  };
 }

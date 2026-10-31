@@ -155,32 +155,23 @@ export async function scanEveryone(db: Database, now = new Date()): Promise<numb
   return created;
 }
 
-// ── Procesos en segundo plano ────────────────────────────────────────────────────────────────────────────
+// ── Consulta de una sola pasada (sin proceso encendido) ─────────────────────────────────────────────────
 
-/** Atiende los mensajes al bot (long polling: no necesita dirección pública) y manda los avisos cada 30 s; recalcula recordatorios cada 10 min. */
-export function startTelegramLoops(db: Database, client: TelegramClient, options: { webUrl?: string | null; onError?: (error: unknown) => void } = {}): () => void {
-  let running = true;
-  let offset = 0;
-  const report = (error: unknown) => options.onError?.(error);
-
-  void (async () => {
-    while (running) {
-      try {
-        const updates = await client.getUpdates(offset, 25);
-        for (const update of updates) {
-          offset = update.update_id + 1;
-          try { await handleUpdate(db, client, update); } catch (error) { report(error); }
-        }
-      } catch (error) {
-        report(error);
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-    }
-  })();
-
-  const tick = setInterval(() => { void dispatchPending(db, client, { webUrl: options.webUrl }).catch(report); }, 30_000);
-  const scan = setInterval(() => { void scanEveryone(db).then(() => dispatchPending(db, client, { webUrl: options.webUrl })).catch(report); }, 10 * 60_000);
-  const first = setTimeout(() => { void scanEveryone(db).then(() => dispatchPending(db, client, { webUrl: options.webUrl })).catch(report); }, 5000);
-  tick.unref(); scan.unref(); first.unref();
-  return () => { running = false; clearInterval(tick); clearInterval(scan); clearTimeout(first); };
+/**
+ * Atiende los mensajes pendientes del bot una sola vez (getUpdates sin espera). Sirve cuando no hay webhook,
+ * por ejemplo en local, llamándolo desde una rutina cada minuto. Recuerda el último mensaje atendido en la base.
+ */
+export async function pollOnce(db: Database, client: TelegramClient): Promise<number> {
+  if (!client.configured) return 0;
+  const { rows } = await db.query<{ last: string }>(`SELECT last_update_id AS last FROM telegram_state WHERE id`);
+  const updates = await client.getUpdates(rows[0] ? Number(rows[0].last) + 1 : 0, 0);
+  let last = rows[0] ? Number(rows[0].last) : -1;
+  for (const update of updates) {
+    last = Math.max(last, update.update_id);
+    try { await handleUpdate(db, client, update); } catch { /* un mensaje con problemas no frena a los demás */ }
+  }
+  if (updates.length > 0) {
+    await db.query(`INSERT INTO telegram_state (id, last_update_id) VALUES (true, $1) ON CONFLICT (id) DO UPDATE SET last_update_id = EXCLUDED.last_update_id, updated_at = now()`, [last]);
+  }
+  return updates.length;
 }
