@@ -9,6 +9,7 @@ import type { Mailer } from './mailer.js';
 import { sendSummaries } from './summary.js';
 import { notConfiguredTelegram, TelegramError, type TelegramClient, type TelegramUpdate } from './telegram.js';
 import { dispatchPending, handleUpdate, pollOnce, scanEveryone } from './telegram-service.js';
+import { sendMonthly } from './monthly.js';
 import { sendWeekly } from './weekly.js';
 
 export interface JobsDeps { db: Database; cronSecret: string | null; mailer: Mailer; telegram?: TelegramClient; capUsd: number; webUrl?: string | null }
@@ -30,14 +31,19 @@ export async function jobsRoutes(app: FastifyInstance, { db, cronSecret, mailer,
   // Recordatorios de entrega de todos + avisos pendientes por Telegram (respeta el silencio). Llamar cada 5–10 minutos.
   job('/jobs/notifications', async () => ({ created: await scanEveryone(db), telegram: await dispatchPending(db, telegram, { webUrl }) }));
 
-  // Resumen por correo: kind=summary (diario, por defecto) o weekly. Una vez por persona y por periodo; force=1 lo repite.
+  // Resumen por correo: kind=summary (diario, por defecto), weekly o monthly (cierre del mes anterior). Una vez por persona y por periodo; force=1 lo repite.
   job('/jobs/email-summary', async (request) => {
     if (!mailer.configured) throw new HttpError(503, 'mail_not_configured', 'Mailchimp no está configurado.');
     const query = request.query as { kind?: string; force?: string };
-    const send = query.kind === 'weekly' ? sendWeekly : sendSummaries;
+    const send = query.kind === 'weekly' ? sendWeekly : query.kind === 'monthly' ? sendMonthly : sendSummaries;
     const results = await send(db, mailer, { capUsd, force: query.force === '1' });
     return { results: results.map(({ html: _html, ...rest }) => rest) };
-  }, { type: 'object', additionalProperties: false, properties: { kind: { type: 'string', enum: ['summary', 'weekly'] }, force: { type: 'string', maxLength: 1 } } });
+  }, { type: 'object', additionalProperties: false, properties: { kind: { type: 'string', enum: ['summary', 'weekly', 'monthly'] }, force: { type: 'string', maxLength: 1 } } });
+
+  // Historial del programador: las últimas rutinas que corrieron solas, con su estado.
+  job('/jobs/scheduler', async () => ({
+    runs: (await db.query(`SELECT job_name AS job, slot_key AS slot, status, started_at AS "startedAt", finished_at AS "finishedAt", error_code AS "errorCode", detail FROM scheduled_job_runs ORDER BY started_at DESC LIMIT 40`)).rows,
+  }));
 
   // Sin webhook (por ejemplo en local): atiende de una vez los mensajes pendientes del bot. Llamar cada minuto.
   job('/jobs/telegram/poll', async () => ({ handled: await pollOnce(db, telegram) }));

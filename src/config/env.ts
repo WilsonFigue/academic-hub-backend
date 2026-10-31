@@ -1,3 +1,4 @@
+import { parseMonthly, parseTimes, parseWeekly } from './schedule.js';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -43,6 +44,11 @@ export interface AppConfig {
   cronSecret: string | null;
   /** Si es true (por defecto) el servidor atiende a Telegram y recalcula los recordatorios por su cuenta; con false solo se usan los endpoints /jobs/*. */
   backgroundJobs: boolean;
+  /** Horarios de las rutinas automáticas (hora de El Salvador); ver src/config/schedule.ts. «off» desactiva una rutina. */
+  scheduleRefresh: string;
+  scheduleWeeklyEmail: string;
+  scheduleMonthlyEmail: string;
+  scheduleDailyEmail: string;
   openaiModel: string;
   /** Precios en USD por millón de tokens (para calcular el costo de cada guía y respetar el tope mensual). */
   openaiPriceInPerM: number;
@@ -246,6 +252,10 @@ export function readConfig(): AppConfig {
     telegramBotToken: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim() || null,
     cronSecret: (process.env.CRON_SECRET ?? '').trim() || null,
     backgroundJobs: bool('BACKGROUND_JOBS', true, problems),
+    scheduleRefresh: (process.env.SCHEDULE_REFRESH_TIMES ?? '06:00,13:00,20:00').trim(),
+    scheduleWeeklyEmail: (process.env.SCHEDULE_WEEKLY_EMAIL ?? 'dom@20:00').trim(),
+    scheduleMonthlyEmail: (process.env.SCHEDULE_MONTHLY_EMAIL ?? '1@08:00').trim(),
+    scheduleDailyEmail: (process.env.SCHEDULE_DAILY_EMAIL ?? 'off').trim(),
     openaiModel: (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
     openaiPriceInPerM: decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems),
     openaiPriceOutPerM: decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems),
@@ -266,6 +276,10 @@ export function readConfig(): AppConfig {
     homeworkEstimatedCostUsd: decimal('HOMEWORK_ESTIMATED_COST_USD', 0.8, 0.01, 100, problems),
     homeworkReasoning: (process.env.HOMEWORK_REASONING_EFFORT ?? 'medium').trim().toLowerCase(),
   };
+  if (!parseTimes(config.scheduleRefresh)) problems.push('SCHEDULE_REFRESH_TIMES no es válido (ejemplo: 06:00,13:00,20:00 u off).');
+  if (!parseWeekly(config.scheduleWeeklyEmail)) problems.push('SCHEDULE_WEEKLY_EMAIL no es válido (ejemplo: dom@20:00 u off).');
+  if (!parseMonthly(config.scheduleMonthlyEmail)) problems.push('SCHEDULE_MONTHLY_EMAIL no es válido (ejemplo: 1@08:00 u off; día del 1 al 28).');
+  if (!parseTimes(config.scheduleDailyEmail)) problems.push('SCHEDULE_DAILY_EMAIL no es válido (ejemplo: 07:00 u off).');
   if (config.cronSecret && config.cronSecret.length < 32) problems.push('CRON_SECRET debe tener al menos 32 caracteres.');
   if (config.devOperatorToken && config.devOperatorToken.length < 32) problems.push('DEV_OPERATOR_TOKEN debe tener al menos 32 caracteres.');
   if (config.devOperatorToken && nodeEnv === 'production') problems.push('DEV_OPERATOR_TOKEN no puede definirse en producción.');

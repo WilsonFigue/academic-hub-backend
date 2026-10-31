@@ -75,9 +75,11 @@ async function main(): Promise<void> {
   if (config.cronSecret && db) app.log.info('Rutinas /jobs habilitadas (requieren CRON_SECRET).');
 
   let stopTelegram: (() => void) | null = null;
+  let stopScheduler: (() => void) | null = null;
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'Cerrando servidor');
     stopTelegram?.();
+    stopScheduler?.();
     await app.close();
     await db?.close();
     process.exit(0);
@@ -90,6 +92,24 @@ async function main(): Promise<void> {
     const { startTelegramLoops } = await import('./modules/notifications/telegram-service.js');
     stopTelegram = startTelegramLoops(db, telegram, { webUrl, onError: (error: unknown) => app.log.warn({ err: { name: (error as Error)?.name, code: (error as { code?: string })?.code } }, 'telegram loop') });
     app.log.info('Avisos por Telegram activos (el servidor atiende al bot y recalcula los recordatorios solo).');
+  }
+  // Rutinas programadas (actualizar desde Blackboard 3 veces al día, correos semanal y mensual…): usan los mismos /jobs/* con CRON_SECRET, dentro del servidor.
+  if (db && config.backgroundJobs) {
+    if (!config.cronSecret) {
+      app.log.warn('Rutinas programadas apagadas: falta CRON_SECRET en .env.');
+    } else {
+      const { createScheduler } = await import('./modules/scheduler/scheduler.js');
+      const { buildJobs } = await import('./modules/scheduler/jobs.js');
+      const call = async (method: 'GET' | 'POST', path: string) => {
+        const response = await app.inject({ method, url: path, headers: { authorization: `Bearer ${config.cronSecret}` } });
+        let json: Record<string, unknown> = {};
+        try { json = response.json(); } catch { /* sin JSON */ }
+        return { status: response.statusCode, json };
+      };
+      const jobs = buildJobs({ call, db, config });
+      stopScheduler = createScheduler({ db, jobs, log: (message, data) => app.log.info(data ?? {}, message) }).start();
+      app.log.info({ rutinas: jobs.map((job) => job.name) }, 'Rutinas programadas activas.');
+    }
   }
 }
 

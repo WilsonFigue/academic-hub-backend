@@ -1,3 +1,6 @@
+# NOTA: con BACKGROUND_JOBS=true el servidor ya dispara estas rutinas solo (ver SCHEDULE_* en production.env.example), así que este crontab
+# NO hace falta. Úsalo únicamente si pones BACKGROUND_JOBS=false y prefieres que las dispare el cron del sistema.
+#
 # Tareas programadas del VPS. Instalar con:  crontab -e   y pegar estas líneas (ajusta /opt/academic-hub a donde esté el proyecto).
 # El VPS usa hora UTC; El Salvador es UTC-6 (sin horario de verano), así que 12:00 UTC = 6:00 a. m. en El Salvador.
 #

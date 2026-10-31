@@ -30,17 +30,19 @@ export async function buildMonthlyReport(db: Queryable, start: Date, options: { 
     cost: string; inp: string; outp: string; calls: number; errors: number; models: string[] | null;
     display_name: string | null; username: string | null; course_name: string | null; activity_name: string | null;
   }>(
-    `SELECT l.feature, l.user_id, l.course_id, l.gradebook_column_id, l.run_id,
+    `SELECT l.feature, COALESCE(l.user_id, ea.user_id) AS user_id, l.course_id, l.gradebook_column_id, l.run_id,
             sum(l.cost_usd) AS cost, COALESCE(sum(l.input_tokens), 0) AS inp, COALESCE(sum(l.output_tokens), 0) AS outp,
             count(*)::int AS calls, count(*) FILTER (WHERE l.status = 'error')::int AS errors,
             array_remove(array_agg(DISTINCT l.model), NULL) AS models,
             max(u.display_name) AS display_name, max(u.username) AS username, max(c.name) AS course_name, max(gc.name) AS activity_name
        FROM ai_usage_log l
-       LEFT JOIN users u ON u.id = l.user_id
+       LEFT JOIN course_enrollments ce ON ce.id = l.enrollment_id
+       LEFT JOIN external_accounts ea ON ea.id = ce.external_account_id
+       LEFT JOIN users u ON u.id = COALESCE(l.user_id, ea.user_id)
        LEFT JOIN courses c ON c.id = l.course_id
        LEFT JOIN gradebook_columns gc ON gc.id = l.gradebook_column_id
       WHERE l.event = 'call' AND l.created_at >= $1::timestamptz AND l.created_at < $2::timestamptz
-      GROUP BY l.feature, l.user_id, l.course_id, l.gradebook_column_id, l.run_id
+      GROUP BY l.feature, COALESCE(l.user_id, ea.user_id), l.course_id, l.gradebook_column_id, l.run_id
       ORDER BY max(u.username), max(c.name), max(gc.name)`, [start.toISOString(), end.toISOString()]);
 
   const users = new Map<string, ReportUser>();

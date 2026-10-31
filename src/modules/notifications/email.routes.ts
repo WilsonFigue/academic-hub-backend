@@ -6,6 +6,7 @@ import { safeEqual, sha256 } from '../../shared/crypto.js';
 import { HttpError, notFound } from '../../shared/errors.js';
 import type { Mailer } from './mailer.js';
 import { sendSummaries } from './summary.js';
+import { sendMonthly } from './monthly.js';
 import { sendWeekly } from './weekly.js';
 import { notConfiguredTelegram, type TelegramClient } from './telegram.js';
 import { dispatchPending, scanEveryone } from './telegram-service.js';
@@ -22,13 +23,13 @@ export async function emailRoutes(app: FastifyInstance, { db, operatorToken, mai
   }
 
   // Cuerpo opcional: { kind?: 'summary' (diario, por defecto) | 'weekly', userId?, dryRun?, force?, reviewTo? }. dryRun arma los correos sin enviar nada; reviewTo manda todos a esa dirección como prueba.
-  app.post<{ Body?: { userId?: string; dryRun?: boolean; force?: boolean; reviewTo?: string; kind?: 'summary' | 'weekly' } }>('/internal/dev/notifications/email-summary', {
-    schema: { hide: true, body: { type: ['object', 'null'], additionalProperties: false, properties: { userId: { type: 'string', format: 'uuid' }, dryRun: { type: 'boolean' }, force: { type: 'boolean' }, reviewTo: { type: 'string', format: 'email', maxLength: 320 }, kind: { type: 'string', enum: ['summary', 'weekly'] } } } },
+  app.post<{ Body?: { userId?: string; dryRun?: boolean; force?: boolean; reviewTo?: string; kind?: 'summary' | 'weekly' | 'monthly' } }>('/internal/dev/notifications/email-summary', {
+    schema: { hide: true, body: { type: ['object', 'null'], additionalProperties: false, properties: { userId: { type: 'string', format: 'uuid' }, dryRun: { type: 'boolean' }, force: { type: 'boolean' }, reviewTo: { type: 'string', format: 'email', maxLength: 320 }, kind: { type: 'string', enum: ['summary', 'weekly', 'monthly'] } } } },
   }, async (request) => {
     authorizeOperator(request);
     const options = request.body ?? {};
     if (!options.dryRun && !mailer.configured) throw new HttpError(503, 'mail_not_configured', 'Mailchimp no está configurado (falta MAILCHIMP_API_KEY).');
-    const send = options.kind === 'weekly' ? sendWeekly : sendSummaries;
+    const send = options.kind === 'weekly' ? sendWeekly : options.kind === 'monthly' ? sendMonthly : sendSummaries;
     const results = await send(db, mailer, { capUsd, userId: options.userId, dryRun: options.dryRun, force: options.force, reviewTo: options.reviewTo });
     return { results: results.map(({ html, ...rest }) => (options.dryRun ? { ...rest, htmlLength: html?.length ?? 0 } : rest)) };
   });

@@ -2,7 +2,7 @@
 // No es una notificación por evento: es un solo correo por persona y por día, que dispara quien programe la rutina.
 import type { Database } from '../../database/connection.js';
 import { createAcademicRepository } from '../academic/academic.repository.js';
-import { monthStart, nextMonthStart } from '../logs/logs.js';
+import { monthStart, nextMonthStart, periodOf } from '../logs/logs.js';
 import { MailError, type Mailer } from './mailer.js';
 import { accent, emailShell, esc, firstName, ink, label, line, muted, td, th } from './email-layout.js';
 import { unreadCount } from './notifications.js';
@@ -121,7 +121,7 @@ export interface SendResult { username: string | null; to: string | null; status
  * El destino es su correo personal; si no lo tiene, el institucional de su cuenta.
  */
 export interface DigestOptions { capUsd: number; userId?: string; dryRun?: boolean; force?: boolean; now?: Date; reviewTo?: string }
-export type DigestKind = 'summary' | 'weekly';
+export type DigestKind = 'summary' | 'weekly' | 'monthly';
 
 /** Semana ISO (lunes a domingo) de un día, como "2026-W44": una llave por semana para no repetir el semanal. */
 export function isoWeekKey(date: Date): string {
@@ -139,7 +139,8 @@ export const sendSummaries = (db: Database, mailer: Mailer, options: DigestOptio
 /** Envío común de los correos consolidados: destino, una vez por periodo, prueba, revisión y registro. */
 export async function sendDigest(db: Database, mailer: Mailer, kind: DigestKind, build: (who: { userId: string; name: string; now: Date }) => Promise<RenderedMail>, options: DigestOptions): Promise<SendResult[]> {
   const now = options.now ?? new Date();
-  const periodKey = kind === 'weekly' ? isoWeekKey(now) : localDay(now);
+  // Diario: el día. Semanal: la semana ISO. Mensual: el mes que se cierra (AAAA-MM), p. ej. el 1 de noviembre cierra 2026-10.
+  const periodKey = kind === 'weekly' ? isoWeekKey(now) : kind === 'monthly' ? periodOf(monthStart(new Date(monthStart(now).getTime() - DAY_MS))).slice(0, 7) : localDay(now);
   const { rows: people } = await db.query<{ id: string; username: string | null; display_name: string | null; email: string | null }>(
     `SELECT u.id, u.username, u.display_name,
             COALESCE(u.contact_email, (SELECT ea.institutional_email FROM external_accounts ea WHERE ea.user_id = u.id AND ea.link_status <> 'revoked' AND ea.institutional_email IS NOT NULL ORDER BY ea.created_at LIMIT 1)) AS email

@@ -4,6 +4,22 @@
 export const esc = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 /** Primer nombre con inicial mayúscula (los nombres de Blackboard vienen en MAYÚSCULAS). */
 export const firstName = (full: string) => { const first = full.trim().split(/\s+/)[0] ?? full; return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase(); };
+const CONNECTORS = new Set(['de', 'del', 'la', 'las', 'el', 'los', 'y', 'e', 'en', 'a', 'al', 'con', 'para', 'por', 'o', 'u']);
+/**
+ * Nombres de materia en un formato legible: «MATEMÁTICA I SECCIÓN 01 02-2026» → «Matemática I». Solo cambia lo que viene TODO en mayúsculas;
+ * si ya trae minúsculas se deja igual (salvo quitar la sección y el ciclo del final).
+ */
+export function niceCourse(name: string): string {
+  const base = name.replace(/\s+SECCI[ÓO]N\s+\d+\s+\d{2}-\d{4}\s*$/i, '').replace(/\s+\d{1,3}\s+\d{2}-\d{4}\s*$/, '').trim() || name;
+  if (base !== base.toLocaleUpperCase('es') || !/[A-ZÁÉÍÓÚÑÜ]{3}/.test(base)) return base;
+  return base.split(/\s+/).map((word, i) => {
+    const lower = word.toLocaleLowerCase('es');
+    if (/^[IVXLC]+$/.test(word)) return word;
+    if (i > 0 && CONNECTORS.has(lower)) return lower;
+    if (word.length >= 2 && !/[AEIOUÁÉÍÓÚ]/.test(word)) return word;
+    return lower.charAt(0).toLocaleUpperCase('es') + lower.slice(1);
+  }).join(' ');
+}
 export const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
 export const font = "'Segoe UI',Helvetica,Arial,sans-serif";
@@ -26,7 +42,7 @@ export const pill = (text: string, tone: 'amber' | 'green' | 'blue' | 'red' | 'g
 };
 /** Tarjeta con título, detalle y una píldora a la derecha. */
 export const itemCard = (title: string, detail: string, tag: string) => `<tr><td style="padding:6px 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid ${line};border-radius:12px"><tr>
-<td style="padding:11px 14px;font-size:13.5px;line-height:1.35;color:${ink}"><b>${esc(title)}</b><br><span style="font-size:12px;color:#7a8190">${esc(detail)}</span></td>
+<td style="padding:11px 14px;font-size:13.5px;line-height:1.35;color:${ink}"><b>${esc(niceCourse(title))}</b><br><span style="font-size:12px;color:#7a8190">${esc(niceCourse(detail))}</span></td>
 <td align="right" valign="middle" style="padding:11px 14px 11px 0">${tag}</td></tr></table></td></tr>`;
 
 export function emailShell(options: { banner: string; dateLabel: string; rows: string; footer?: string }): string {
