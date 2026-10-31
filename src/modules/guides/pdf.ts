@@ -1,8 +1,7 @@
 // PDF de una guía de estudio: se arma desde el texto guardado en la base de datos (la fuente de verdad) y se imprime con Chromium.
 // Todo el texto se escapa antes de entrar a la plantilla: nada de lo que genera la IA se interpreta como HTML.
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import type { Queryable } from '../../database/connection.js';
 import { resolveChromiumExecutable } from '../blackboard/session-login.js';
 import type { GuideContent } from './guides.js';
 
@@ -125,16 +124,31 @@ export async function renderGuidePdf(input: GuidePdfInput): Promise<Buffer> {
   }
 }
 
-const PDF_DIR = join(process.cwd(), '.state', 'guides');
-/** Súbelo al cambiar el diseño: los PDF en caché se rehacen. */
+/** Súbelo al cambiar el diseño: los PDF guardados se rehacen cuando haya Chromium. */
 const PDF_VERSION = 'v2-compacto';
-/** PDF en caché: cambia solo cuando cambia el contenido de la guía. */
-export async function guidePdf(guideId: string, input: GuidePdfInput): Promise<string> {
-  mkdirSync(PDF_DIR, { recursive: true });
-  const hash = createHash('sha1').update(JSON.stringify([PDF_VERSION, input.title, input.course, input.dueAt, input.points, input.content, input.wantsGeoGebra, input.webUrl])).digest('hex').slice(0, 12);
-  const target = join(PDF_DIR, `${guideId}-${hash}.pdf`);
-  if (existsSync(target)) return target;
-  writeFileSync(target, await renderGuidePdf(input), { mode: 0o600 });
-  return target;
+/** Huella del contenido y del diseño con que se arma el PDF: si no cambia, el PDF guardado sigue valiendo. */
+export const guidePdfHash = (input: GuidePdfInput): string =>
+  createHash('sha1').update(JSON.stringify([PDF_VERSION, input.title, input.course, input.dueAt, input.points, input.content, input.wantsGeoGebra, input.webUrl])).digest('hex').slice(0, 12);
+
+export type PdfRenderer = (input: GuidePdfInput) => Promise<Buffer>;
+
+/**
+ * PDF de una guía, guardado en la base de datos. Si ya está y coincide con el contenido actual, se sirve tal cual (sin Chromium).
+ * Si falta o quedó viejo se arma con `render` y se guarda. Si armarlo falla pero hay uno guardado, se sirve ese (mejor viejo que nada).
+ */
+export async function ensureGuidePdf(db: Queryable, guideId: string, input: GuidePdfInput, render: PdfRenderer = renderGuidePdf): Promise<{ bytes: Buffer; fresh: boolean }> {
+  const hash = guidePdfHash(input);
+  const { rows } = await db.query<{ input_hash: string; content: Buffer }>(`SELECT input_hash, content FROM study_guide_pdfs WHERE guide_id = $1`, [guideId]);
+  const stored = rows[0];
+  if (stored && stored.input_hash === hash) return { bytes: stored.content, fresh: false };
+  try {
+    const bytes = await render(input);
+    await db.query(
+      `INSERT INTO study_guide_pdfs (guide_id, input_hash, content) VALUES ($1, $2, $3)
+       ON CONFLICT (guide_id) DO UPDATE SET input_hash = EXCLUDED.input_hash, content = EXCLUDED.content, created_at = now()`, [guideId, hash, bytes]);
+    return { bytes, fresh: true };
+  } catch (error) {
+    if (stored) return { bytes: stored.content, fresh: false };
+    throw error;
+  }
 }
-export const readPdf = (path: string) => readFileSync(path);

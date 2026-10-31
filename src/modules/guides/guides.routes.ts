@@ -3,7 +3,7 @@ import type { Database } from '../../database/connection.js';
 import { currentSession, requireAuth } from '../auth/auth.guard.js';
 import { DEFAULT_POLICY, getGuide, getGuidePdfSource, listSettings, processQueue, requestGuide, setEnabled, type GuideGenerator, type GuidePolicy } from './guides.js';
 import { guideDocx } from './docx.js';
-import { guidePdf, readPdf } from './pdf.js';
+import { ensureGuidePdf } from './pdf.js';
 import { HttpError } from '../../shared/errors.js';
 
 const uuidParam = { type: 'object', required: ['id'], additionalProperties: false, properties: { id: { type: 'string', format: 'uuid' } } } as const;
@@ -35,17 +35,16 @@ export async function guidesRoutes(app: FastifyInstance, { db, generator, policy
     schema: { tags: ['study-guides'], params: uuidParam, querystring: { type: 'object', additionalProperties: false, properties: { download: { type: 'string' } } } },
   }, async (request, reply) => {
     const source = await getGuidePdfSource(db, userId(request), request.params.id);
-    let path: string;
+    let bytes: Buffer;
     try {
-      path = await guidePdf(source.guideId, {
+      bytes = (await ensureGuidePdf(db, source.guideId, {
         title: source.title, course: source.course, dueAt: source.dueAt, points: source.points, content: source.content, generatedAt: source.generatedAt,
         webUrl: `${webOrigin}/activities/${request.params.id}/guide`, wantsGeoGebra: source.tools.includes('geogebra'),
-      });
+      })).bytes;
     } catch {
       throw new HttpError(503, 'pdf_unavailable', 'No fue posible generar el PDF en este equipo.');
     }
     const fileName = `Guía de estudio - ${source.title}`.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
-    const bytes = readPdf(path);
     return reply.header('Content-Type', 'application/pdf').header('X-Content-Type-Options', 'nosniff').header('Cache-Control', 'private, max-age=60')
       .header('Content-Disposition', `${request.query.download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(fileName)}.pdf`)
       .header('Content-Length', bytes.length).send(bytes);

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { hashPassword } from '../src/modules/auth/password.js';
-import { closePdfBrowser, renderGuideHtml, type GuidePdfInput } from '../src/modules/guides/pdf.js';
+import { DEFAULT_POLICY, processQueue, type GuideGenerator } from '../src/modules/guides/guides.js';
+import { closePdfBrowser, ensureGuidePdf, guidePdfHash, renderGuideHtml, type GuidePdfInput } from '../src/modules/guides/pdf.js';
 import { TestClient, setupTestContext, teardownTestContext, testDatabaseAvailable, type TestContext } from './helpers/test-db.js';
 
 const input = (overrides: Partial<GuidePdfInput> = {}): GuidePdfInput => ({
@@ -85,5 +86,66 @@ describe('PDF de la guía por la API (PostgreSQL real)', { skip: !testDatabaseAv
     assert.match(String(download.headers['content-disposition']), /^attachment;/);
     assert.equal((await bob.request('GET', `/api/v1/activities/${ids.ready}/study-guide/pdf`)).statusCode, 404);
     assert.equal((await alice.request('GET', `/api/v1/activities/${ids.none}/study-guide/pdf`)).statusCode, 404);
+  });
+
+  test('el PDF queda guardado en la base de datos y la segunda vez se sirve desde ahí, sin armarlo de nuevo', async (t) => {
+    const first = await alice.request('GET', `/api/v1/activities/${ids.ready}/study-guide/pdf`);
+    if (first.statusCode === 503) return t.skip('Este equipo no puede generar PDF (sin Chromium).');
+    const stored = await ctx.db.query<{ content: Buffer }>(`SELECT content FROM study_guide_pdfs`);
+    assert.equal(stored.rowCount, 1);
+    assert.equal(stored.rows[0]!.content.subarray(0, 5).toString(), '%PDF-');
+    // Si el PDF saliera de Chromium, este cambio se perdería: sale de la base.
+    const marker = Buffer.from('%PDF-1.4 desde-la-base');
+    await ctx.db.query(`UPDATE study_guide_pdfs SET content = $1`, [marker]);
+    const again = await alice.request('GET', `/api/v1/activities/${ids.ready}/study-guide/pdf`);
+    assert.equal(again.statusCode, 200);
+    assert.equal(again.rawPayload.toString(), marker.toString());
+  });
+
+  test('ensureGuidePdf: usa lo guardado si coincide, rehace si cambió y, si no puede rehacer, sirve el guardado', async () => {
+    const guide = (await ctx.db.query<{ id: string }>(`SELECT id FROM study_guides LIMIT 1`)).rows[0]!.id;
+    await ctx.db.query(`DELETE FROM study_guide_pdfs`);
+    let renders = 0;
+    const render = async () => { renders += 1; return Buffer.from(`%PDF-render-${renders}`); };
+    const base = input();
+    // 1. No hay nada guardado: se arma y se guarda.
+    assert.deepEqual(await ensureGuidePdf(ctx.db, guide, base, render).then((r) => [r.bytes.toString(), r.fresh]), ['%PDF-render-1', true]);
+    // 2. Mismo contenido: no se arma otra vez.
+    assert.deepEqual(await ensureGuidePdf(ctx.db, guide, base, render).then((r) => [r.bytes.toString(), r.fresh]), ['%PDF-render-1', false]);
+    assert.equal(renders, 1);
+    // 3. Cambió la fecha de entrega: se rehace.
+    const moved = input({ dueAt: '2026-12-01T05:59:00.000Z' });
+    assert.notEqual(guidePdfHash(base), guidePdfHash(moved));
+    assert.deepEqual(await ensureGuidePdf(ctx.db, guide, moved, render).then((r) => [r.bytes.toString(), r.fresh]), ['%PDF-render-2', true]);
+    // 4. Cambió otra vez pero no se puede armar (sin Chromium): se sirve el guardado.
+    const failing = async () => { throw new Error('sin Chromium'); };
+    assert.deepEqual(await ensureGuidePdf(ctx.db, guide, input({ points: 99 }), failing).then((r) => [r.bytes.toString(), r.fresh]), ['%PDF-render-2', false]);
+    // 5. No hay nada guardado y no se puede armar: falla.
+    await ctx.db.query(`DELETE FROM study_guide_pdfs`);
+    await assert.rejects(() => ensureGuidePdf(ctx.db, guide, base, failing), /sin Chromium/);
+  });
+
+  test('al terminar una guía se arma su PDF con el enlace de la web y queda en la base de datos', async () => {
+    const enrollment = (await ctx.db.query<{ enrollment_id: string; course_id: string }>(`SELECT enrollment_id, course_id FROM study_guides LIMIT 1`)).rows[0]!;
+    const column = await one(`INSERT INTO gradebook_columns (course_id, external_id, name, points_possible, due_at) VALUES ($1, '_c3', 'Tarea 3', 10, now() + interval '4 days') RETURNING id`, [enrollment.course_id]);
+    const activity = await one(`INSERT INTO student_grades (enrollment_id, course_id, gradebook_column_id) VALUES ($1, $2, $3) RETURNING id`, [enrollment.enrollment_id, enrollment.course_id, column]);
+    const guideId = await one(`INSERT INTO study_guides (enrollment_id, course_id, gradebook_column_id, trigger, status) VALUES ($1, $2, $3, 'manual', 'requested') RETURNING id`, [enrollment.enrollment_id, enrollment.course_id, column]);
+    const generator: GuideGenerator = { configured: true, async generate() { return { content: input().content, model: 'falso', inputTokens: 1, outputTokens: 1, costUsd: 0.01 }; } };
+    const seen: GuidePdfInput[] = [];
+    const policy = { ...DEFAULT_POLICY, webOrigin: 'https://app.example.com', renderPdf: async (given: GuidePdfInput) => { seen.push(given); return Buffer.from('%PDF-de-la-generacion'); } };
+    const summary = await processQueue(ctx.db, generator, policy);
+    assert.equal(summary.ready, 1);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]!.webUrl, `https://app.example.com/activities/${activity}/guide`);
+    assert.equal(seen[0]!.title, 'Tarea 3');
+    const stored = await ctx.db.query<{ content: Buffer }>(`SELECT content FROM study_guide_pdfs WHERE guide_id = $1`, [guideId]);
+    assert.equal(stored.rows[0]!.content.toString(), '%PDF-de-la-generacion');
+    // Un fallo al armar el PDF nunca estropea la guía.
+    const col4 = await one(`INSERT INTO gradebook_columns (course_id, external_id, name, points_possible, due_at) VALUES ($1, '_c4', 'Tarea 4', 10, now() + interval '4 days') RETURNING id`, [enrollment.course_id]);
+    await ctx.db.query(`INSERT INTO student_grades (enrollment_id, course_id, gradebook_column_id) VALUES ($1, $2, $3)`, [enrollment.enrollment_id, enrollment.course_id, col4]);
+    const g4 = await one(`INSERT INTO study_guides (enrollment_id, course_id, gradebook_column_id, trigger, status) VALUES ($1, $2, $3, 'manual', 'requested') RETURNING id`, [enrollment.enrollment_id, enrollment.course_id, col4]);
+    const broken = { ...DEFAULT_POLICY, renderPdf: async () => { throw new Error('Chromium no disponible'); } };
+    assert.equal((await processQueue(ctx.db, generator, broken)).ready, 1);
+    assert.equal((await ctx.db.query<{ status: string }>(`SELECT status FROM study_guides WHERE id = $1`, [g4])).rows[0]!.status, 'ready');
   });
 });

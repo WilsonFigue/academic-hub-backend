@@ -155,16 +155,16 @@ export async function scanEveryone(db: Database, now = new Date()): Promise<numb
   return created;
 }
 
-// ── Consulta de una sola pasada (sin proceso encendido) ─────────────────────────────────────────────────
+// ── Atender al bot ──────────────────────────────────────────────────────────────────────────────────────
 
 /**
- * Atiende los mensajes pendientes del bot una sola vez (getUpdates sin espera). Sirve cuando no hay webhook,
- * por ejemplo en local, llamándolo desde una rutina cada minuto. Recuerda el último mensaje atendido en la base.
+ * Atiende los mensajes pendientes del bot (getUpdates). Sin espera sirve para llamarlo desde una rutina cada minuto; con espera (long polling)
+ * lo usa el servidor para atender al bot al instante. Recuerda el último mensaje atendido en la base de datos.
  */
-export async function pollOnce(db: Database, client: TelegramClient): Promise<number> {
+export async function pollOnce(db: Database, client: TelegramClient, waitSeconds = 0): Promise<number> {
   if (!client.configured) return 0;
   const { rows } = await db.query<{ last: string }>(`SELECT last_update_id AS last FROM telegram_state WHERE id`);
-  const updates = await client.getUpdates(rows[0] ? Number(rows[0].last) + 1 : 0, 0);
+  const updates = await client.getUpdates(rows[0] ? Number(rows[0].last) + 1 : 0, waitSeconds);
   let last = rows[0] ? Number(rows[0].last) : -1;
   for (const update of updates) {
     last = Math.max(last, update.update_id);
@@ -174,4 +174,42 @@ export async function pollOnce(db: Database, client: TelegramClient): Promise<nu
     await db.query(`INSERT INTO telegram_state (id, last_update_id) VALUES (true, $1) ON CONFLICT (id) DO UPDATE SET last_update_id = EXCLUDED.last_update_id, updated_at = now()`, [last]);
   }
   return updates.length;
+}
+
+// ── Procesos en segundo plano (el servidor los arranca solo; con BACKGROUND_JOBS=false se usan los endpoints /jobs/*) ──
+
+export interface LoopOptions {
+  webUrl?: string | null;
+  onError?: (error: unknown) => void;
+  /** Cada cuánto se mandan por Telegram los avisos pendientes (30 s por defecto). */
+  dispatchEveryMs?: number;
+  /** Cada cuánto se recalculan los recordatorios de entrega de todos (10 min por defecto). */
+  scanEveryMs?: number;
+  /** Primer cálculo de recordatorios tras arrancar (5 s por defecto). */
+  firstScanAfterMs?: number;
+  /** Espera tras un error al consultar a Telegram (5 s por defecto). */
+  errorDelayMs?: number;
+}
+
+/** Atiende al bot con long polling (no necesita dirección pública), manda los avisos cada 30 s y recalcula los recordatorios cada 10 min. Devuelve la función para detenerlo. */
+export function startTelegramLoops(db: Database, client: TelegramClient, options: LoopOptions = {}): () => void {
+  let running = true;
+  const report = (error: unknown) => options.onError?.(error);
+  const deliver = () => dispatchPending(db, client, { webUrl: options.webUrl });
+  const scanAndDeliver = () => scanEveryone(db).then(deliver);
+
+  void (async () => {
+    while (running) {
+      try { await pollOnce(db, client, 25); } catch (error) {
+        report(error);
+        await new Promise((resolve) => setTimeout(resolve, options.errorDelayMs ?? 5000));
+      }
+    }
+  })();
+
+  const tick = setInterval(() => { void deliver().catch(report); }, options.dispatchEveryMs ?? 30_000);
+  const scan = setInterval(() => { void scanAndDeliver().catch(report); }, options.scanEveryMs ?? 10 * 60_000);
+  const first = setTimeout(() => { void scanAndDeliver().catch(report); }, options.firstScanAfterMs ?? 5000);
+  tick.unref(); scan.unref(); first.unref();
+  return () => { running = false; clearInterval(tick); clearInterval(scan); clearTimeout(first); };
 }

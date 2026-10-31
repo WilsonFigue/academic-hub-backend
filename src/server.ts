@@ -17,7 +17,9 @@ async function main(): Promise<void> {
   const { createFileStore } = await import('./modules/files/store.js');
   const { createOpenAIGenerator } = await import('./modules/guides/openai.js');
   const { DEFAULT_POLICY } = await import('./modules/guides/guides.js');
-  const guidePolicy = { ...DEFAULT_POLICY, monthlyCapUsd: config.studyGuideMonthlyCapUsd, maxPerRun: config.studyGuideMaxPerRun };
+  // Al terminar cada guía se arma su PDF y se guarda en la base de datos: la API lo sirve después sin Chromium.
+  const { renderGuidePdf } = await import('./modules/guides/pdf.js');
+  const guidePolicy = { ...DEFAULT_POLICY, monthlyCapUsd: config.studyGuideMonthlyCapUsd, maxPerRun: config.studyGuideMaxPerRun, webOrigin: config.frontendOrigin, renderPdf: renderGuidePdf };
   const guideGenerator = config.openaiApiKey && db
     ? createOpenAIGenerator({ apiKey: config.openaiApiKey, model: config.studyGuideModel, priceInPerM: config.studyGuidePriceInPerM, priceOutPerM: config.studyGuidePriceOutPerM, reasoningEffort: config.studyGuideReasoning || undefined,
         maxInputChars: config.studyGuideMaxInputChars, db, store: createFileStore(sessions) })
@@ -66,8 +68,10 @@ async function main(): Promise<void> {
   if (!db) app.log.warn('Sin base de datos configurada: /api/v1 responderá 503.');
   if (internalEnabled) app.log.warn('Rutas /internal/dev habilitadas (solo loopback, requieren DEV_OPERATOR_TOKEN).');
 
+  let stopTelegram: (() => void) | null = null;
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'Cerrando servidor');
+    stopTelegram?.();
     await app.close();
     await db?.close();
     process.exit(0);
@@ -76,6 +80,11 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   await app.listen({ port: config.port, host: config.host });
+  if (db && telegram.configured && config.backgroundJobs) {
+    const { startTelegramLoops } = await import('./modules/notifications/telegram-service.js');
+    stopTelegram = startTelegramLoops(db, telegram, { webUrl, onError: (error: unknown) => app.log.warn({ err: { name: (error as Error)?.name, code: (error as { code?: string })?.code } }, 'telegram loop') });
+    app.log.info('Avisos por Telegram activos (el servidor atiende al bot y recalcula los recordatorios solo).');
+  }
 }
 
 main().catch((error: unknown) => {

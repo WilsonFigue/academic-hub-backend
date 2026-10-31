@@ -9,6 +9,7 @@
 import type { Database, Queryable } from '../../database/connection.js';
 import { HttpError, notFound } from '../../shared/errors.js';
 import { notifyGuideReady } from '../notifications/notifications.js';
+import { ensureGuidePdf, type GuidePdfInput, type PdfRenderer } from './pdf.js';
 import { detectTools } from './tools.js';
 
 export interface GuideContent {
@@ -40,6 +41,10 @@ export interface GuidePolicy {
   estimatedCostUsd: number;
   /** Una guía 'generating' más vieja que esto se considera abandonada y vuelve a la cola. */
   staleGeneratingMs: number;
+  /** Dirección pública de la web (para el enlace dentro del PDF). */
+  webOrigin?: string;
+  /** Si está, al terminar cada guía se arma su PDF y se guarda en la base de datos (la API lo sirve después sin Chromium). */
+  renderPdf?: PdfRenderer;
 }
 export const DEFAULT_POLICY: GuidePolicy = { monthlyCapUsd: 5, maxPerRun: 5, estimatedCostUsd: 0.05, staleGeneratingMs: 10 * 60_000 };
 
@@ -210,6 +215,7 @@ export async function processQueue(db: Database, generator: GuideGenerator, poli
         `UPDATE study_guides SET status = 'ready', content = $2, model = $3, input_tokens = $4, output_tokens = $5, cost_usd = $6, error_code = NULL, finished_at = now() WHERE id = $1`,
         [row.id, JSON.stringify(result.content), result.model, result.inputTokens, result.outputTokens, result.costUsd]);
       summary.ready += 1;
+      if (policy.renderPdf) await storeGuidePdf(db, row.id, policy.webOrigin ?? DEFAULT_WEB_ORIGIN, policy.renderPdf).catch(() => {});
       await notifyGuideReady(db, row.id).catch(() => {});
     } catch (error) {
       await db.query(`UPDATE study_guides SET status = 'failed', error_code = $2, finished_at = now() WHERE id = $1`, [row.id, error instanceof GuideError ? error.code : 'generation_failed']);
@@ -242,4 +248,46 @@ export async function getGuidePdfSource(db: Queryable, userId: string, activityI
     points: row.points === null ? null : Number(row.points), content: row.content, tools: detectTools(JSON.stringify(row.content)),
     generatedAt: row.finished_at ? new Date(row.finished_at).toISOString() : null,
   };
+}
+
+const DEFAULT_WEB_ORIGIN = 'http://localhost:5173';
+
+/** Datos con los que se arma el PDF de una guía lista, a partir del id de la guía (sin necesidad de un usuario). */
+export async function guidePdfInputOf(db: Queryable, guideId: string, webOrigin: string): Promise<GuidePdfInput | null> {
+  const { rows } = await db.query<{ activity_id: string; name: string; course: string; due: Date | null; points: string | null; content: GuideContent; finished_at: Date | null }>(
+    `SELECT sg.id AS activity_id, gc.name, c.name AS course, COALESCE(sg.effective_due_at, gc.due_at) AS due, gc.points_possible AS points, g.content, g.finished_at
+       FROM study_guides g
+       JOIN student_grades sg ON sg.enrollment_id = g.enrollment_id AND sg.gradebook_column_id = g.gradebook_column_id
+       JOIN gradebook_columns gc ON gc.id = g.gradebook_column_id
+       JOIN courses c ON c.id = g.course_id
+      WHERE g.id = $1 AND g.status = 'ready'`, [guideId]);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    title: row.name, course: row.course, dueAt: row.due ? new Date(row.due).toISOString() : null, points: row.points === null ? null : Number(row.points), content: row.content,
+    wantsGeoGebra: detectTools(JSON.stringify(row.content)).includes('geogebra'), generatedAt: row.finished_at ? new Date(row.finished_at).toISOString() : null,
+    webUrl: `${webOrigin}/activities/${row.activity_id}/guide`,
+  };
+}
+
+/** Arma y guarda en la base de datos el PDF de una guía lista. */
+export async function storeGuidePdf(db: Queryable, guideId: string, webOrigin: string, render: PdfRenderer): Promise<boolean> {
+  const input = await guidePdfInputOf(db, guideId, webOrigin);
+  if (!input) return false;
+  await ensureGuidePdf(db, guideId, input, render);
+  return true;
+}
+
+/** Arma el PDF de las guías listas que no lo tienen o lo tienen viejo (guías anteriores a este cambio). Seguro de repetir. */
+export async function backfillGuidePdfs(db: Queryable, webOrigin: string, render: PdfRenderer): Promise<{ made: number; failed: number }> {
+  const { rows } = await db.query<{ id: string }>(`SELECT id FROM study_guides WHERE status = 'ready' ORDER BY finished_at`);
+  let made = 0; let failed = 0;
+  for (const guide of rows) {
+    try {
+      const input = await guidePdfInputOf(db, guide.id, webOrigin);
+      if (!input) continue;
+      if ((await ensureGuidePdf(db, guide.id, input, render)).fresh) made += 1;
+    } catch { failed += 1; }
+  }
+  return { made, failed };
 }

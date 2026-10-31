@@ -3,7 +3,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import { httpLoginCookies, parseLoginForm } from '../src/modules/blackboard/http-login.js';
-import { LoginError } from '../src/modules/blackboard/session-login.js';
+import { LoginError, type CapturedSession } from '../src/modules/blackboard/session-login.js';
+import { loginModeFromEnv, loginStored, type LoginDeps } from '../src/modules/blackboard/stored-login.js';
 
 const LOGIN_PAGE = (extra = '') => `<html><body>
 <form method="POST" action="/webapps/portal/execute/changeLocale"><input type="hidden" name="locale" value="es_ES"></form>
@@ -97,5 +98,45 @@ describe('login a Blackboard por HTTP, sin navegador (servidor falso)', () => {
 
   test('si Blackboard no responde: login_unexpected', async () => {
     await rejects(httpLoginCookies('http://127.0.0.1:1', { username: 'x', password: 'y' }), 'login_unexpected');
+  });
+});
+
+describe('modo de inicio de sesión desatendido (BLACKBOARD_LOGIN_MODE)', () => {
+  const fakeSession = { tag: 'sesion' } as unknown as CapturedSession;
+  const creds = { username: 'u', password: 'p' };
+  const make = (http: 'ok' | LoginError, browser: 'ok' | Error = 'ok') => {
+    const calls: string[] = [];
+    const deps: LoginDeps = {
+      async http() { calls.push('http'); if (http !== 'ok') throw http; return fakeSession; },
+      async browser() { calls.push('browser'); if (browser !== 'ok') throw browser; return fakeSession; },
+    };
+    return { calls, deps };
+  };
+
+  test('por defecto es el navegador, como siempre', () => {
+    assert.equal(loginModeFromEnv(undefined), 'browser');
+    assert.equal(loginModeFromEnv('cualquier-cosa'), 'browser');
+    assert.equal(loginModeFromEnv('auto'), 'auto'); assert.equal(loginModeFromEnv('http'), 'http');
+  });
+
+  test('browser: solo Chromium, nunca HTTP', async () => {
+    const { calls, deps } = make('ok');
+    await loginStored('https://x', creds, {}, 'browser', deps);
+    assert.deepEqual(calls, ['browser']);
+  });
+
+  test('http: solo HTTP, sin respaldo con navegador aunque falle', async () => {
+    const { calls, deps } = make(new LoginError('login_unexpected', 'cambió'));
+    await assert.rejects(() => loginStored('https://x', creds, {}, 'http', deps), (e: LoginError) => e.code === 'login_unexpected');
+    assert.deepEqual(calls, ['http']);
+  });
+
+  test('auto: HTTP primero; si la página cambió, Chromium; con contraseña mala o MFA NO se reintenta con el navegador', async () => {
+    const ok = make('ok'); await loginStored('https://x', creds, {}, 'auto', ok.deps); assert.deepEqual(ok.calls, ['http']);
+    const changed = make(new LoginError('login_unexpected', 'cambió')); await loginStored('https://x', creds, {}, 'auto', changed.deps); assert.deepEqual(changed.calls, ['http', 'browser']);
+    for (const code of ['invalid_credentials', 'mfa_required'] as const) {
+      const bad = make(new LoginError(code, 'no')); await assert.rejects(() => loginStored('https://x', creds, {}, 'auto', bad.deps), (e: LoginError) => e.code === code);
+      assert.deepEqual(bad.calls, ['http'], 'sin segundo intento');
+    }
   });
 });

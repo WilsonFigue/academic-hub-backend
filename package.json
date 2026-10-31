@@ -24,7 +24,8 @@
     "credentials": "tsx scripts/credentials.ts",
     "homework:flag": "tsx scripts/homework-flag.ts",
     "instructors": "tsx scripts/fetch-instructors.ts",
-    "homework:backfill": "tsx scripts/homework-backfill.ts"
+    "homework:backfill": "tsx scripts/homework-backfill.ts",
+    "guides:pdf-backfill": "tsx scripts/guide-pdf-backfill.ts"
   },
   "license": "UNLICENSED",
   "type": "module",

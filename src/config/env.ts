@@ -39,6 +39,8 @@ export interface AppConfig {
   telegramBotToken: string | null;
   /** Clave de las rutinas por endpoint (/jobs/*): el programador de tareas la manda como «Authorization: Bearer …». Mínimo 32 caracteres. */
   cronSecret: string | null;
+  /** Si es true (por defecto) el servidor atiende a Telegram y recalcula los recordatorios por su cuenta; con false solo se usan los endpoints /jobs/*. */
+  backgroundJobs: boolean;
   openaiModel: string;
   /** Precios en USD por millón de tokens (para calcular el costo de cada guía y respetar el tope mensual). */
   openaiPriceInPerM: number;
@@ -240,6 +242,7 @@ export function readConfig(): AppConfig {
     mailFromName: (process.env.MAIL_FROM_NAME ?? 'Academic Hub').trim() || 'Academic Hub',
     telegramBotToken: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim() || null,
     cronSecret: (process.env.CRON_SECRET ?? '').trim() || null,
+    backgroundJobs: bool('BACKGROUND_JOBS', true, problems),
     openaiModel: (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
     openaiPriceInPerM: decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems),
     openaiPriceOutPerM: decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems),

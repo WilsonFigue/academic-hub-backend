@@ -3,7 +3,7 @@ import { after, before, describe, test } from 'node:test';
 import { hashPassword } from '../src/modules/auth/password.js';
 import { notify } from '../src/modules/notifications/notifications.js';
 import { TelegramError, createTelegramClient, type TelegramClient, type TelegramUpdate } from '../src/modules/notifications/telegram.js';
-import { createLinkCode, dispatchPending, handleUpdate, inQuietHours } from '../src/modules/notifications/telegram-service.js';
+import { createLinkCode, dispatchPending, handleUpdate, inQuietHours, startTelegramLoops } from '../src/modules/notifications/telegram-service.js';
 import { TestClient, setupTestContext, teardownTestContext, testDatabaseAvailable, type TestContext } from './helpers/test-db.js';
 
 const PASSWORD = 'Clave-de-prueba-1';
@@ -134,5 +134,28 @@ describe('Telegram: vincular, mandar y respetar el silencio (PostgreSQL real)', 
     assert.match(outbox[0]!.text, /Mensaje de prueba/);
     assert.equal((await alice.request('POST', '/api/v1/notifications/telegram/unlink', {})).json().linked, false);
     assert.equal((await alice.request('POST', '/api/v1/notifications/telegram/test', {})).statusCode, 409);
+  });
+
+  test('procesos automáticos: atienden al bot y mandan los avisos solos, sin que nadie llame a un endpoint', async () => {
+    const { code } = await createLinkCode(ctx.db, ids.bob);
+    let queue: TelegramUpdate[] = [{ update_id: 900, message: { chat: { id: 777, type: 'private', username: 'bobtg' }, text: `/start ${code}` } }];
+    const sent: Array<{ chat: number; text: string }> = [];
+    const live: TelegramClient = {
+      configured: true,
+      async username() { return 'academic_test_bot'; },
+      async sendMessage(chat, text) { sent.push({ chat, text }); },
+      async getUpdates(offset) { await new Promise((r) => setTimeout(r, 20)); const out = queue.filter((u) => u.update_id >= offset); queue = []; return out; },
+      async setWebhook() {}, async deleteWebhook() {}, webhookSecret() { return 'x'; },
+    };
+    const waitFor = async (check: () => Promise<boolean> | boolean) => { for (let i = 0; i < 100; i += 1) { if (await check()) return true; await new Promise((r) => setTimeout(r, 50)); } return false; };
+    const stop = startTelegramLoops(ctx.db, live, { dispatchEveryMs: 60, scanEveryMs: 60_000, firstScanAfterMs: 60_000, errorDelayMs: 30 });
+    try {
+      // 1. Atiende el /start por su cuenta y conecta el chat.
+      assert.ok(await waitFor(async () => (await ctx.db.query(`SELECT 1 FROM telegram_links WHERE user_id = $1 AND chat_id = 777`, [ids.bob])).rowCount === 1), 'el bot atendió el /start');
+      // 2. Un aviso nuevo sale solo por Telegram (de día).
+      await push(ids.bob, 'announcement_new', 'Anuncio automático', 'auto-1');
+      const night = inQuietHours(new Date());
+      if (!night) assert.ok(await waitFor(() => sent.some((m) => m.chat === 777 && m.text.includes('Anuncio automático'))), 'el aviso salió solo');
+    } finally { stop(); }
   });
 });
