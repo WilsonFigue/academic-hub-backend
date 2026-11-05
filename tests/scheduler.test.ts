@@ -160,6 +160,12 @@ describe('programador y cierre mensual (PostgreSQL real)', { skip: !testDatabase
     const call: JobCall = async (_m, path) => { calls.push(path); return { status: 200, json: { results: [] } }; };
     const jobs = buildJobs({ call, db: ctx.db, sleep: async () => {}, config: { scheduleRefresh: 'off', scheduleWeeklyEmail: 'dom@20:00', scheduleMonthlyEmail: '1@08:00', scheduleDailyEmail: 'off', homeworkMonthlyCapUsd: 10 } });
     assert.deepEqual(jobs.map((j) => j.name), ['correo-semanal', 'correo-mensual']);
+    // Ventanas de recuperación: el semanal hasta 3 días después (domingo 20:00 → miércoles 20:00); el mensual hasta 5 días.
+    assert.deepEqual(jobs.map((j) => j.catchupMs), [3 * 24 * HOUR, 5 * 24 * HOUR]);
+    const weekly = jobs[0]!.slots;
+    assert.equal(dueSlot(weekly, sv('2026-11-02T10:00:00'), jobs[0]!.catchupMs)?.key, '2026-11-01@20:00', 'si la PC se enciende el lunes a media mañana, el semanal sale');
+    assert.equal(dueSlot(weekly, sv('2026-11-04T19:00:00'), jobs[0]!.catchupMs)?.key, '2026-11-01@20:00', 'y todavía el miércoles por la tarde');
+    assert.equal(dueSlot(weekly, sv('2026-11-04T21:00:00'), jobs[0]!.catchupMs), null, 'pasados 3 días ya no');
     for (const job of jobs) await job.run();
     assert.deepEqual(calls, ['/jobs/email-summary?kind=weekly', '/jobs/email-summary?kind=monthly']);
     // El cierre mensual deja guardado el reporte definitivo del mes que terminó (el tope de gasto se cuenta por mes y vuelve a empezar solo).

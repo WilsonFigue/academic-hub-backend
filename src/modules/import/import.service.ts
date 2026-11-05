@@ -46,6 +46,8 @@ export interface ImportOptions {
   passingGradePct?: number | null;
   /** Origen registrado en sync_runs (por defecto, según el modo). */
   trigger?: 'scheduled';
+  /** En modo daily, relee también el árbol de contenido de las materias activas: así llegan los archivos y enlaces que el profesor sube después. */
+  content?: boolean;
   /** Se llama una vez verificada la identidad y antes de leer datos (p. ej. para enviar las marcas de revisión pendientes). Un fallo aquí no detiene la importación. */
   onIdentity?: (accountId: string) => Promise<void>;
 }
@@ -178,6 +180,7 @@ export async function importStudent(
 ): Promise<ImportSummary> {
   const mode: ImportMode = options.mode ?? 'onboarding';
   const daily = mode === 'daily';
+  const scheduled = options.trigger === 'scheduled';
   const passingPct = options.passingGradePct ?? null;
   // 1. Identidad verificada con la sesión real (antes de crear nada).
   const { user: profile, locale, result: profileRead } = await gateway.profile();
@@ -261,10 +264,11 @@ export async function importStudent(
 
       // ── extracción (sin transacciones abiertas) ──
       started = Date.now();
-      // La actualización diaria no relee el árbol de contenido ni los esquemas (casi nunca cambian).
+      // La actualización diaria no relee los esquemas (casi nunca cambian) y el árbol de contenido solo si se pide (options.content).
       const emptyRead = { rows: [] as never[], status: 'succeeded' as const, complete: true, truncated: false, pages: 0, httpStatusCounts: {}, errorCode: null };
-      const content = daily ? emptyRead : await gateway.contentTree(courseExternalId);
-      if (!daily) record('content', courseExternalId, content, started);
+      const readContent = !daily || options.content === true;
+      const content = readContent ? await gateway.contentTree(courseExternalId) : emptyRead;
+      if (readContent) record('content', courseExternalId, content, started);
       started = Date.now();
       const schemas = daily ? emptyRead : await gateway.gradingSchemas(courseExternalId);
       if (!daily) record('grading_schemas', courseExternalId, schemas, started);
@@ -338,8 +342,8 @@ export async function importStudent(
         }
 
         let contentIds: Map<string, string>;
-        if (daily) {
-          // Sin releer el contenido: se conserva el enlace de cada columna con su contenido ya guardado.
+        if (!readContent || (scheduled && content.status === 'failed')) {
+          // Sin releer el contenido (o si en una rutina la lectura falló): se conserva el enlace de cada columna con su contenido ya guardado.
           const known = await client.query<{ external_id: string; id: string }>('SELECT external_id, id FROM course_content_items WHERE course_id = $1', [courseId]);
           contentIds = new Map(known.rows.map((row) => [row.external_id, row.id]));
         } else {

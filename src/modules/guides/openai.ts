@@ -5,7 +5,7 @@
 import type { Queryable } from '../../database/connection.js';
 import { GuideError, type GuideContent, type GuideGenerator, type GuideRequest, type GuideResult } from './guides.js';
 import { logAiUsage } from '../logs/logs.js';
-import { gatherMaterial, type FileStore, type Material } from './material.js';
+import { describeExtras, explainNoMaterial, gatherMaterial, type FileStore, type Material } from './material.js';
 
 export interface OpenAIOptions {
   apiKey: string;
@@ -46,6 +46,7 @@ Reglas:
 - Ayuda a entender, no a resolver: explica qué piden, los conceptos necesarios y cómo abordar el problema paso a paso, con ejemplos tomados del material. NO des la respuesta final de la actividad ni resuelvas lo que se va a calificar.
 - Escribe en español claro, para un estudiante universitario, con tono cercano y directo. Frases cortas.
 - Cita siempre de qué archivo sale cada idea (por ejemplo: "según «3. LA CIRCUNFERENCIA.pdf»").
+- Si se indican «Herramientas que parecen necesarias» (por ejemplo Excel), incluye cómo usarlas para esta actividad: qué funciones o pasos aplicar y en qué orden, apoyándote en los títulos de los enlaces de la carpeta, sin inventar lo que el material no dice. Si la actividad no trae instrucciones propias, la guía o los ejercicios de la carpeta son sus instrucciones: explícalos como tales.
 - Estructura sugerida: "Qué te piden", "Conceptos que necesitas" (con viñetas), "Cómo abordarla paso a paso", "Ejemplo del material", "Antes de entregar" (lista de verificación) y, si aplica, "Lo que el material no cubre".
 - Extensión total aproximada: entre 600 y 1000 palabras. Si la actividad es un examen o evaluación, enfócate en qué repasar y no en resolver nada.
 - En "sources" lista solo los archivos que realmente usaste, con el nombre exacto con que se te entregaron y una nota breve de para qué sirvieron.`;
@@ -61,7 +62,8 @@ export function buildUserPrompt(material: Material): string {
   ].filter(Boolean).join('\n');
   const docs = material.docs.map((doc, index) =>
     `=== MATERIAL ${index + 1}: «${doc.title}» (${doc.role === 'guia' ? 'archivo de la misma carpeta que la actividad' : doc.role === 'instrucciones' ? 'instrucciones' : 'clase o documento relacionado'})${doc.truncated ? ' [recortado]' : ''} ===\n${doc.text}`).join('\n\n');
-  return `${head}\n\nMaterial disponible:\n\n${docs || '(no hay material de la materia relacionado con esta actividad)'}\n\nPrepara la guía de estudio de esta actividad.`;
+  const extras = describeExtras(material);
+  return `${head}${extras ? `\n\n${extras}` : ''}\n\nMaterial disponible:\n\n${docs || '(no hay material de la materia relacionado con esta actividad)'}\n\nPrepara la guía de estudio de esta actividad.`;
 }
 
 const asString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
@@ -115,7 +117,7 @@ export function createOpenAIGenerator(options: OpenAIOptions): OpenAIGenerator {
     describe,
     async generate(request: GuideRequest): Promise<GuideResult> {
       const { material, prompt } = await describe(request);
-      if (material.docs.length === 0) throw new GuideError('no_material', 'No hay material de la materia relacionado con esta actividad.');
+      if (material.docs.length === 0) throw new GuideError('no_material', await explainNoMaterial(options.db, request, material));
       let response: Response;
       const started = Date.now();
       const base = { event: 'call' as const, feature: 'study_guide' as const, runId: request.guideId, enrollmentId: request.enrollmentId, courseId: request.courseId, gradebookColumnId: request.gradebookColumnId, model: options.model, turn: 1 };

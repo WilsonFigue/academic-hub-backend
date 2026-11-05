@@ -54,7 +54,7 @@ const OWN = `ea.user_id = $1 AND ea.link_status <> 'revoked' AND ce.status = 'ac
 
 export interface GuideView {
   id: string; status: 'requested' | 'generating' | 'ready' | 'failed'; trigger: 'manual' | 'routine';
-  content: GuideContent | null; model: string | null; errorCode: string | null; requestedAt: string; finishedAt: string | null;
+  content: GuideContent | null; model: string | null; errorCode: string | null; errorDetail: string | null; requestedAt: string; finishedAt: string | null;
   /** Herramientas que la actividad pide usar (p. ej. 'geogebra'), detectadas en el texto de la guía. */
   tools: string[];
 }
@@ -62,7 +62,7 @@ export interface GuideView {
 const toView = (row: Record<string, unknown>): GuideView => ({
   tools: row.content ? detectTools(JSON.stringify(row.content)) : [],
   id: row.id as string, status: row.status as GuideView['status'], trigger: row.trigger as GuideView['trigger'],
-  content: (row.content as GuideContent | null) ?? null, model: (row.model as string | null) ?? null, errorCode: (row.error_code as string | null) ?? null,
+  content: (row.content as GuideContent | null) ?? null, model: (row.model as string | null) ?? null, errorCode: (row.error_code as string | null) ?? null, errorDetail: (row.error_detail as string | null) ?? null,
   requestedAt: new Date(row.requested_at as string).toISOString(), finishedAt: row.finished_at ? new Date(row.finished_at as string).toISOString() : null,
 });
 
@@ -112,7 +112,7 @@ export async function getGuide(db: Queryable, userId: string, activityId: string
   const activity = await ownActivity(db, userId, activityId);
   if (!activity) throw notFound();
   const { rows } = await db.query(
-    `SELECT id, status, trigger, content, model, error_code, requested_at, finished_at FROM study_guides WHERE enrollment_id = $1 AND gradebook_column_id = $2`,
+    `SELECT id, status, trigger, content, model, error_code, error_detail, requested_at, finished_at FROM study_guides WHERE enrollment_id = $1 AND gradebook_column_id = $2`,
     [activity.enrollmentId, activity.gradebookColumnId]);
   const guide = rows[0] ? toView(rows[0]) : null;
   return { activityId, courseEnabled: activity.courseEnabled, guide, canRequest: guide === null || guide.status === 'failed' };
@@ -125,14 +125,14 @@ export async function requestGuide(db: Database, userId: string, activityId: str
   const inserted = await db.query(
     `INSERT INTO study_guides (enrollment_id, course_id, gradebook_column_id, trigger) VALUES ($1, $2, $3, 'manual')
      ON CONFLICT (enrollment_id, gradebook_column_id) DO NOTHING
-     RETURNING id, status, trigger, content, model, error_code, requested_at, finished_at`,
+     RETURNING id, status, trigger, content, model, error_code, error_detail, requested_at, finished_at`,
     [activity.enrollmentId, activity.courseId, activity.gradebookColumnId]);
   if (inserted.rows[0]) return toView(inserted.rows[0]);
   // Ya existía: solo una guía fallida vuelve a la cola (la condición del UPDATE evita carreras).
   const retried = await db.query(
-    `UPDATE study_guides SET status = 'requested', error_code = NULL, requested_at = now(), started_at = NULL, finished_at = NULL
+    `UPDATE study_guides SET status = 'requested', error_code = NULL, error_detail = NULL, requested_at = now(), started_at = NULL, finished_at = NULL
       WHERE enrollment_id = $1 AND gradebook_column_id = $2 AND status = 'failed'
-      RETURNING id, status, trigger, content, model, error_code, requested_at, finished_at`,
+      RETURNING id, status, trigger, content, model, error_code, error_detail, requested_at, finished_at`,
     [activity.enrollmentId, activity.gradebookColumnId]);
   if (retried.rows[0]) return toView(retried.rows[0]);
   throw new HttpError(409, 'study_guide_exists', 'Esta actividad ya tiene una guía de estudio.');
@@ -218,7 +218,9 @@ export async function processQueue(db: Database, generator: GuideGenerator, poli
       if (policy.renderPdf) await storeGuidePdf(db, row.id, policy.webOrigin ?? DEFAULT_WEB_ORIGIN, policy.renderPdf).catch(() => {});
       await notifyGuideReady(db, row.id).catch(() => {});
     } catch (error) {
-      await db.query(`UPDATE study_guides SET status = 'failed', error_code = $2, finished_at = now() WHERE id = $1`, [row.id, error instanceof GuideError ? error.code : 'generation_failed']);
+      const known = error instanceof GuideError;
+      await db.query(`UPDATE study_guides SET status = 'failed', error_code = $2, error_detail = $3, finished_at = now() WHERE id = $1`,
+        [row.id, known ? error.code : 'generation_failed', known && error.message !== error.code ? error.message : null]);
       summary.failed += 1;
     }
   }

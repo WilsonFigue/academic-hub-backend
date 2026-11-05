@@ -231,12 +231,20 @@ export interface GradeInput {
 
 export type GradeState = { status: string | null; submission_status: string | null; score: string | number | null; is_submitted: boolean | null; effective_due_at: string | null };
 
+/**
+ * Estado de la nota que usa toda la app. Cuando el docente pone la nota directamente en el libro de calificaciones (sin calificar el intento),
+ * Blackboard deja status = NEEDS_GRADING aunque la entrega ya figure como GRADED y haya nota: eso es una actividad calificada.
+ */
+export function effectiveGradeStatus(status: string | null, submission: string | null, score: number | null): string | null {
+  return status === 'NEEDS_GRADING' && submission === 'GRADED' && score !== null ? 'GRADED' : status;
+}
+
 export async function upsertGrade(client: Queryable, enrollmentId: string, courseId: string, columnId: string, input: GradeInput, runId: string, counters: Counters): Promise<UpsertResult<GradeState>> {
   const grade = input.grade ?? {};
   const submission = isObject(grade.submissionStatus) ? grade.submissionStatus : {};
   const feedback = text(grade.instructorFeedback);
   const fields = {
-    gradeId: str(grade.id) ?? null, status: str(grade.status) ?? null, submission: str(submission.status) ?? null,
+    gradeId: str(grade.id) ?? null, status: effectiveGradeStatus(str(grade.status) ?? null, str(submission.status) ?? null, toNumber(grade.effectiveScore) ?? null), submission: str(submission.status) ?? null,
     score: toNumber(grade.effectiveScore), possible: toNumber(grade.pointsPossible), display: isObject(grade.displayGrade) ? grade.displayGrade : null,
     manual: str(grade.manualGrade) ?? null, exempt: toBool(grade.isExempt), hasFeedback: toBool(grade.hasAttemptOrGradeFeedback) ?? (feedback ? true : null),
     feedback: htmlToText(feedback), version: toNumber(grade.version), viewed: toBool(grade.hasBeenViewedByStudent),

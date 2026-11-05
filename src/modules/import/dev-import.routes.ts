@@ -216,7 +216,7 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
         onPhase('extracting');
         const session = captured;
         const summary = await importStudent(db, createBlackboardGateway(captured.transport), onPhase, {
-          mode: 'daily', trigger: 'scheduled', passingGradePct,
+          mode: 'daily', trigger: 'scheduled', content: true, passingGradePct,
           onIdentity: async (accountId) => { await dispatchReviewMarks(db, accountId, (course, content, reviewed) => session.markReviewed(course, content, reviewed)); },
         });
         changes = summary.sync.changesRecorded;

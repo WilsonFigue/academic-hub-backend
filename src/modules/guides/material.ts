@@ -5,6 +5,7 @@ import type { Queryable } from '../../database/connection.js';
 import { isPreviewable, previewFile } from '../files/extract.js';
 import type { createFileStore } from '../files/store.js';
 import { GuideError, type GuideRequest } from './guides.js';
+import { TOOLS, detectTools } from './tools.js';
 
 export type FileStore = ReturnType<typeof createFileStore>;
 
@@ -19,12 +20,36 @@ export interface MaterialDoc {
   truncated: boolean;
 }
 export interface SkippedDoc { title: string; reason: string }
+/** Enlace de la carpeta de la actividad (video, tutorial…): no se abre, pero su título dice el tema o la herramienta. */
+export interface MaterialLink { title: string; url: string | null }
 export interface Material {
   course: string;
   activity: { name: string; dueAt: string | null; points: number | null; category: string | null };
   docs: MaterialDoc[];
   skipped: SkippedDoc[];
+  links: MaterialLink[];
+  /** Herramientas que la actividad parece pedir (ids de tools.ts), vistas en su nombre, sus instrucciones, sus guías y los títulos de los enlaces. */
+  tools: string[];
   totalChars: number;
+}
+
+/**
+ * Lo que la IA debe saber además de los documentos: los enlaces de la carpeta, las herramientas que parecen necesarias
+ * y, si la actividad no trae instrucciones propias (solo es un buzón para subir algo), que use la guía o los ejercicios de la carpeta.
+ */
+export function describeExtras(material: Material): string {
+  const lines: string[] = [];
+  if (material.links.length > 0) {
+    lines.push('Enlaces de la misma carpeta (no se pueden abrir; el título dice el tema o la herramienta):');
+    for (const link of material.links) lines.push(`- ${link.title}`);
+  }
+  if (material.tools.length > 0) {
+    lines.push(`Herramientas que parecen necesarias: ${material.tools.map((id) => TOOLS.find((tool) => tool.id === id)?.label ?? id).join(', ')}.`);
+  }
+  if (!material.docs.some((doc) => doc.role === 'instrucciones')) {
+    lines.push('Nota: esta actividad no trae instrucciones propias en Blackboard (puede ser solo el lugar donde se sube lo que se pidió en otro archivo). Toma como instrucciones la guía, los ejercicios o el documento relacionado de abajo; si no hay ninguno, dilo.');
+  }
+  return lines.join('\n');
 }
 
 const STOP = new Set(['de', 'la', 'el', 'los', 'las', 'del', 'y', 'en', 'un', 'una', 'por', 'para', 'con', 'sobre', 'al', 'a', 'o', 'e', 'su', 'sus', 'que', 'se', 'ciclo', 'pdf', 'docx', 'pptx', 'actividad', 'tarea', 'proyecto', 'clase', 'clases', 'videos', 'archivo']);
@@ -44,6 +69,33 @@ export async function fileText(store: FileStore, ref: { id: string; accountId: s
   if (preview.kind === 'pdf' && preview.scanned) return { skip: 'PDF escaneado (sin texto)' };
   const text = preview.text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   return text.length < 40 ? { skip: 'sin texto útil' } : { text };
+}
+
+/**
+ * Explica en una frase por qué una actividad no tiene material para armar la guía. Sin IA: sale de lo que hay en la base
+ * (si la actividad trae instrucciones en Blackboard, qué archivos tiene la materia y por qué se descartaron).
+ */
+export async function explainNoMaterial(db: Queryable, request: GuideRequest, material: Material): Promise<string> {
+  const { rows } = await db.query<{ linked: boolean; body: string | null; files: number; links: number }>(
+    `SELECT gc.content_item_id IS NOT NULL AS linked, ci.body_text AS body,
+            (SELECT count(*)::int FROM enrollment_content_visibility v JOIN course_content_items f ON f.id = v.content_item_id AND f.removed_at_source IS NULL
+              WHERE v.enrollment_id = $1 AND v.missing_since IS NULL AND f.handler = 'resource/x-bb-file') AS files,
+            (SELECT count(*)::int FROM enrollment_content_visibility v JOIN course_content_items f ON f.id = v.content_item_id AND f.removed_at_source IS NULL
+              WHERE v.enrollment_id = $1 AND v.missing_since IS NULL AND (f.handler LIKE '%externallink%' OR f.handler LIKE '%blti%' OR f.handler LIKE '%video%')) AS links
+       FROM gradebook_columns gc LEFT JOIN course_content_items ci ON ci.id = gc.content_item_id
+      WHERE gc.id = $2`, [request.enrollmentId, request.gradebookColumnId]);
+  const info = rows[0] ?? { linked: false, body: null, files: 0, links: 0 };
+  const outside = /\b(teams|meet|zoom|seminario|presencial|exposici[oó]n)\b/i.test(`${material.activity.name} ${info.body ?? ''}`);
+  const head = 'Esta actividad no tiene material de la materia para armar una guía';
+  if (material.skipped.length > 0) {
+    const reasons = [...new Set(material.skipped.map((doc) => doc.reason))].join(', ');
+    return `${head}: encontré archivos relacionados pero no se pudieron usar (${reasons}).`;
+  }
+  if (!info.linked && outside) return `${head}: se hace fuera de Blackboard (Teams o presencial) y no trae instrucciones ni archivos para estudiar.`;
+  if (!info.linked) return `${head}: en Blackboard no tiene instrucciones ni archivos ligados.`;
+  if (info.files === 0 && info.links > 0) return `${head}: la materia solo tiene videos o enlaces, y por ahora la guía solo lee documentos.`;
+  if (info.files === 0) return `${head}: la materia todavía no tiene archivos para leer.`;
+  return `${head}: ninguno de los ${info.files} archivos de la materia se relaciona con esta actividad.`;
 }
 
 interface Candidate {
@@ -82,14 +134,17 @@ export async function gatherMaterial(db: Queryable, store: FileStore, request: G
 
   const subject = tokens(`${activity.name} ${row.item_title ?? ''} ${(row.item_body ?? '').slice(0, 400)}`);
   const week = weekOf(rows.find((r) => r.parent === row.item_parent)?.folder ?? null);
-  const scored = rows.map((r): Candidate & { score: number; same: boolean } => {
+  const scored = rows.map((r): Candidate & { score: number; same: boolean; guideLike: boolean } => {
     const same = row.item_parent !== null && r.parent === row.item_parent;
     const own = tokens(`${r.title} ${r.file?.fileName ?? ''}`);
     const folder = tokens(r.folder ?? '');
     let score = overlap(subject, own) * 3 + overlap(subject, folder) * 2;
     if (week && weekOf(r.folder) === week) score += 2;
+    // Un archivo que se llama «guía», «instrucciones» o «rúbrica» y comparte el tema con la actividad es SU guía, aunque esté en otra carpeta.
+    const guideLike = /gu[ií]a|instruc|r[uú]brica|lineamiento/i.test(r.title) && overlap(subject, own) >= 1;
+    if (guideLike) score += 50;
     if (same) score += 100;
-    return { id: r.id, title: r.title, parent: r.parent, folder: r.folder, file: r.file, body: r.body, score, same };
+    return { id: r.id, title: r.title, parent: r.parent, folder: r.folder, file: r.file, body: r.body, score, same, guideLike };
   }).filter((r) => r.same || r.score >= 3).sort((a, b) => b.score - a.score);
 
   const docs: MaterialDoc[] = [];
@@ -118,8 +173,17 @@ export async function gatherMaterial(db: Queryable, store: FileStore, request: G
     const room = Math.min(perDoc, maxChars - used);
     const truncated = text.length > room;
     const cut = truncated ? text.slice(0, room) : text;
-    docs.push({ title: candidate.title, fileName: candidate.file?.fileName ?? null, role: candidate.same ? 'guia' : 'material', score: candidate.score, text: cut, chars: cut.length, truncated });
+    docs.push({ title: candidate.title, fileName: candidate.file?.fileName ?? null, role: candidate.same || candidate.guideLike ? 'guia' : 'material', score: candidate.score, text: cut, chars: cut.length, truncated });
     used += cut.length;
   }
-  return { course: row.course, activity, docs, skipped, totalChars: used };
+  const links = row.item_parent === null ? [] : (await db.query<MaterialLink>(
+    `SELECT f.title, f.external_url AS url
+       FROM enrollment_content_visibility v
+       JOIN course_content_items f ON f.id = v.content_item_id AND f.removed_at_source IS NULL
+      WHERE v.enrollment_id = $1 AND v.missing_since IS NULL AND f.course_id = $2 AND f.parent_external_id = $3
+        AND (f.handler LIKE '%externallink%' OR f.handler LIKE '%blti%')
+      ORDER BY f.position NULLS LAST, f.title LIMIT 15`, [request.enrollmentId, request.courseId, row.item_parent])).rows;
+  // Las herramientas se buscan solo donde hablan de ESTA actividad (no en todas las clases, que mencionan de todo).
+  const about = [activity.name, ...docs.filter((doc) => doc.role !== 'material').map((doc) => doc.text), ...links.map((link) => link.title)].join('\n');
+  return { course: row.course, activity, docs, skipped, links, tools: detectTools(about), totalChars: used };
 }

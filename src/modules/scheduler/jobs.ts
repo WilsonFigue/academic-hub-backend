@@ -69,7 +69,8 @@ export function buildJobs(options: { call: JobCall; db: Database; config: JobsCo
     jobs.push({ name, slots, catchupMs, async run() { await before?.(); const { json } = await must('POST', path); return { results: json.results }; } });
   };
   emailJob('correo-diario', parseTimes(config.scheduleDailyEmail), 6 * HOUR, '/jobs/email-summary');
-  emailJob('correo-semanal', parseWeekly(config.scheduleWeeklyEmail), 12 * HOUR, '/jobs/email-summary?kind=weekly');
+  // El semanal siempre cuenta los últimos 7 días desde que se arma, así que mandarlo con retraso no lo desactualiza: se recupera hasta 3 días después.
+  emailJob('correo-semanal', parseWeekly(config.scheduleWeeklyEmail), 3 * 24 * HOUR, '/jobs/email-summary?kind=weekly');
   // Cierre mensual: primero se guarda el reporte definitivo del mes que terminó; el tope de gasto vuelve a empezar solo (se cuenta por mes).
   emailJob('correo-mensual', parseMonthly(config.scheduleMonthlyEmail), 5 * 24 * HOUR, '/jobs/email-summary?kind=monthly',
     () => ensureMonthlyReports(db, { capUsd: config.homeworkMonthlyCapUsd }));
