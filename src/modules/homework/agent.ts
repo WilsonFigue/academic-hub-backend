@@ -4,7 +4,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import type { Queryable } from '../../database/connection.js';
-import { describeExtras, gatherMaterial, type FileStore } from '../guides/material.js';
+import { describeExtras, explainNoMaterial, gatherMaterial, type FileStore } from '../guides/material.js';
 import { logAiUsage } from '../logs/logs.js';
 import { createCalculator } from './calc.js';
 import { buildDocumentFiles, type CoverData, type DocumentSpec, type FigureAsset } from './document.js';
@@ -30,7 +30,7 @@ export const SYSTEM_PROMPT = `Eres un asistente académico que RESUELVE por comp
 
 REGLAS
 1. Resuelve TODO lo que pide la actividad, sin dejar ejercicios ni apartados sin responder. Muestra el procedimiento paso a paso y destaca cada resultado final.
-2. Entrega en el formato que pida la actividad (PDF, Word, Excel, código, GeoGebra…). Si pide varios entregables, produce todos. Todo documento de texto (trabajo, informe, capítulo) se entrega SIEMPRE en PDF y en Word a la vez: la herramienta «documento» genera los dos, tú no eliges formato. Excel solo si la actividad pide Excel. Excel cuando la actividad lo pida o cuando «Herramientas que parecen necesarias» / los enlaces de la carpeta lo indiquen (p. ej. «Distribución binomial en Excel»): entonces el cálculo va en un libro con fórmulas reales y el documento explica el resultado. Si dudas entre dos formatos (hoja de cálculo o documento) y el trabajo es de cálculo, datos, tablas o distribuciones, entrega AMBOS. Lo que tú no puedes producir (una firma, un dato personal que no tienes) se deja como marcador [COMPLETAR: qué falta].
+2. Entrega en el formato que pida la actividad (PDF, Word, Excel, código, GeoGebra…). Si pide varios entregables, produce todos. Todo documento de texto (trabajo, informe, capítulo) se entrega SIEMPRE en PDF y en Word a la vez: la herramienta «documento» genera los dos, tú no eliges formato. Excel cuando la actividad lo pida o cuando «Herramientas que parecen necesarias» / los enlaces de la carpeta lo indiquen (p. ej. «Distribución binomial en Excel»): entonces el cálculo va en un libro con fórmulas reales y el documento explica el resultado. Si dudas entre dos formatos (hoja de cálculo o documento) y el trabajo es de cálculo, datos, tablas o distribuciones, entrega AMBOS. Lo que tú no puedes producir (una firma, un dato personal que no tienes) se deja como marcador [COMPLETAR: qué falta].
 2b. ANTES de producir nada, decide qué herramientas y formatos exige la actividad: léelo en las instrucciones, en la guía o los ejercicios de la carpeta y en los títulos de los enlaces. Si la actividad no trae instrucciones propias, las instrucciones son la guía o los ejercicios de la carpeta (marcados como «misma carpeta»). Usa la herramienta correcta en vez de reemplazarla: lo que pida GeoGebra o Excel se hace con «geogebra» o «excel». Si una herramienta que se menciona no puedes ejecutarla (p. ej. Python, SPSS), dilo en «pendientes» y entrega lo más cercano que sí puedas hacer.
 3. Haz la tarea BIEN HECHA: clara, ordenada y completa en lo que se pide, con figuras, tablas y fórmulas cuando el problema las necesite. Rica en calidad, no en cantidad: nada de relleno.
 4. TODA cifra sale de la herramienta «calcular» (o de fórmulas de Excel). Nunca hagas cuentas de memoria. Comprueba los resultados (por ejemplo, sustituyendo en las ecuaciones originales) antes de escribirlos.
@@ -127,6 +127,14 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
     return { row, material, guide: guide.rows[0]?.content ?? null };
   }
 
+  /** Lo que la actividad exige según las herramientas detectadas en sus instrucciones, guías y enlaces: el servidor lo comprueba antes de dejar terminar. */
+  function requirementsFor(material: Awaited<ReturnType<typeof context>>['material']) {
+    const out: Array<{ text: string; met: (deliverables: Deliverable[], tools: Record<string, number>) => boolean }> = [];
+    if (material.tools.includes('excel')) out.push({ text: 'un libro Excel (.xlsx) con fórmulas reales, hecho con la herramienta «excel» (la actividad o sus enlaces piden Excel)', met: (d) => d.some((file) => file.kind === 'xlsx') });
+    if (material.tools.includes('geogebra')) out.push({ text: 'la construcción con la herramienta «geogebra» (la actividad pide GeoGebra)', met: (_d, tools) => (tools.geogebra ?? 0) > 0 });
+    return out;
+  }
+
   function userPrompt(ctx: Awaited<ReturnType<typeof context>>): string {
     const { row, material, guide } = ctx;
     const due = row.due ? new Date(row.due).toLocaleDateString('es-SV', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/El_Salvador' }) : 'sin fecha';
@@ -136,7 +144,8 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
     // Solo se entrega el carné cuando el material lo menciona: es un dato del problema, nunca el nombre ni otros datos personales.
     const needsCarne = /carn[eé]t?\b/i.test(material.docs.map((d) => d.text).join('\n')) || /carn[eé]t?\b/i.test(row.name);
     const carne = needsCarne && row.carne && /^\d{4,}$/.test(row.carne) ? `Carné del estudiante: ${row.carne} (dígitos en orden: ${row.carne.split('').join(', ')})` : needsCarne ? 'Carné del estudiante: no disponible' : 'Ninguno (la actividad no usa datos personales).';
-    const extras = describeExtras(material);
+    const required = requirementsFor(material);
+    const extras = [describeExtras(material), required.length > 0 ? `ENTREGABLES QUE EL SERVIDOR EXIGE (no podrás terminar sin ellos): ${required.map((r) => r.text).join('; ')}.` : ''].filter(Boolean).join('\n');
     return `${head}${extras ? `\n\n${extras}` : ''}\n\nDatos permitidos:\n${carne}\n\nMaterial disponible:\n\n${docs || '(no hay material de la materia relacionado con esta actividad)'}${guideText}\n\nTienes como máximo ${options.maxTurns} turnos. Resuelve la actividad completa y entrega los archivos que pida.`;
   }
 
@@ -144,6 +153,9 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
     configured: true,
     async generate(request: HomeworkRequest): Promise<HomeworkResult> {
       const ctx = await context(request);
+      // Sin ningún material (ni instrucciones ni guía): no hay qué resolver, y no se paga una llamada para inventarlo.
+      if (ctx.material.docs.length === 0) throw new HomeworkError('no_material', undefined, await explainNoMaterial(options.db, { guideId: request.runId, enrollmentId: request.enrollmentId, courseId: request.courseId, gradebookColumnId: request.gradebookColumnId }, ctx.material));
+      const required = requirementsFor(ctx.material);
       const dir = join(options.outDir, request.runId);
       rmSync(dir, { recursive: true, force: true });   // si la tarea se vuelve a generar, no quedan archivos viejos
       mkdirSync(dir, { recursive: true });
@@ -152,6 +164,7 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
       const calc = createCalculator();
       const figures = new Map<string, FigureAsset>();
       const documentsByName = new Map<string, string[]>();   // nombre base → sus archivos: rehacer un documento con el mismo nombre lo reemplaza
+      const workbooksByName = new Map<string, string>();   // igual con los libros de Excel
       const ggbByFigure = new Map<string, string>();   // una figura de GeoGebra repetida reemplaza a la anterior, no suma otro .ggb
       const deliverables: Deliverable[] = []; const names = new Set<string>();
       const report: HomeworkReport = { turns: 0, tools: {}, assumptions: [], pending: [], placeholders: [], warnings: [], materialDocs: ctx.material.docs.map((d) => d.title) };
@@ -192,12 +205,21 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
           case 'excel': {
             try {
               const built = await buildWorkbook(args as unknown as WorkbookSpec);
+              // Rehacer un libro con el mismo nombre lo REEMPLAZA (como con los documentos): no quedan versiones viejas entre los entregables.
+              const baseKey = String(args.nombre_archivo ?? 'tarea').replace(/\.xlsx$/i, '').toLowerCase().trim();
+              const previous = workbooksByName.get(baseKey);
+              if (previous) {
+                const at = deliverables.findIndex((d) => d.name === previous);
+                if (at >= 0) deliverables.splice(at, 1);
+                rmSync(join(dir, previous), { force: true }); names.delete(previous.toLowerCase());
+              }
               const file = safeName(args.nombre_archivo, 'xlsx', names);
+              workbooksByName.set(baseKey, file);
               writeFileSync(join(dir, file), built.buffer, { mode: 0o600 });
               deliverables.push({ name: file, kind: 'xlsx', bytes: built.buffer.length });
               report.placeholders.push(...placeholdersIn(args));
               const entries = Object.entries(built.computed);
-              return { ok: true, archivo: file, formulas: built.formulas, errores_de_formula: built.errors, valores_calculados: Object.fromEntries(entries.slice(0, 120)), ...(entries.length > 120 ? { nota: `Se muestran 120 de ${entries.length} valores.` } : {}) };
+              return { ok: true, archivo: file, nota: 'Si debes corregir este libro, vuelve a llamar con EL MISMO nombre_archivo: reemplaza al anterior.', formulas: built.formulas, errores_de_formula: built.errors, valores_calculados: Object.fromEntries(entries.slice(0, 120)), ...(entries.length > 120 ? { nota: `Se muestran 120 de ${entries.length} valores.` } : {}) };
             } catch (error) { return { error: (error as Error).message }; }
           }
           case 'documento': {
@@ -247,7 +269,9 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
       const budget = Math.min(request.budgetUsd ?? options.maxPerTaskUsd, options.maxPerTaskUsd);
       const priceIn = options.priceInPerM / 1_000_000, priceOut = options.priceOutPerM / 1_000_000;
       const base = { feature: 'homework' as const, runId: request.runId, enrollmentId: request.enrollmentId, courseId: request.courseId, gradebookColumnId: request.gradebookColumnId, model: options.model };
-      let nudged = false; let stoppedByCost = false; let lastIn = 0, lastOut = 0, pendingChars = 0;
+      let nudged = false; let requirementNudged = false; let stoppedByCost = false;
+      /** Si falta un entregable exigido, se le devuelve al modelo (una sola vez) en lugar de dejarlo terminar. */
+      const missingRequired = () => required.filter((r) => !r.met(deliverables, report.tools)).map((r) => r.text); let lastIn = 0, lastOut = 0, pendingChars = 0;
       for (let turn = 1; turn <= options.maxTurns; turn += 1) {
         report.turns = turn;
         // Antes de cada llamada se estima lo que costará la entrada y se limita la salida (que incluye el razonamiento) para no pasar del presupuesto.
@@ -293,6 +317,13 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
         input.push(...(output as unknown as Array<Record<string, unknown>>));
         if (calls.length === 0) {
           if (body.status === 'incomplete' && deliverables.length === 0) throw new HomeworkError('output_truncated', usage());
+          const lacking = missingRequired();
+          if (lacking.length > 0 && !requirementNudged && turn < options.maxTurns) {
+            requirementNudged = true;
+            const demand = `Falta algo que la actividad exige: ${lacking.join('; ')}. Prodúcelo ahora con las herramientas y vuelve a llamar a «finalizar».`;
+            input.push({ role: 'user', content: demand }); pendingChars += demand.length;
+            continue;
+          }
           if (deliverables.length > 0 || nudged) break;
           nudged = true;
           const nudge = 'Aún no hay archivos. Usa las herramientas para producir los entregables (documento, excel…) y termina con «finalizar».';
@@ -306,7 +337,17 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
           const text = JSON.stringify(result).slice(0, 8000); pendingChars += text.length;
           input.push({ type: 'function_call_output', call_id: call.call_id, output: text });
         }
-        if (finished) break;
+        if (finished) {
+          const lacking = missingRequired();
+          if (lacking.length > 0 && !requirementNudged && turn < options.maxTurns) {
+            requirementNudged = true; finished = false;
+            const demand = `No puedes terminar todavía: falta lo que la actividad exige: ${lacking.join('; ')}. Prodúcelo ahora y vuelve a llamar a «finalizar».`;
+            input.push({ role: 'user', content: demand }); pendingChars += demand.length;
+            continue;
+          }
+          if (lacking.length > 0) report.warnings.push(`Faltó lo que la actividad exige: ${lacking.join('; ')}.`);
+          break;
+        }
         if (turn === options.maxTurns - 2) { const hint = 'Te quedan 2 turnos: produce ahora los archivos finales que falten y llama a «finalizar».'; input.push({ role: 'user', content: hint }); pendingChars += hint.length; }
       }
       if (!finished && !stoppedByCost && deliverables.length > 0) report.warnings.push('El agente no llamó a «finalizar»; se entregan los archivos producidos.');

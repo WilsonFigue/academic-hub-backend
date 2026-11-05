@@ -34,6 +34,9 @@ describe('bitácoras, tope mensual duro y reporte (PostgreSQL real)', { skip: !t
   const column = async (enrollment: string, course: string, external: string, name: string) => {
     const col = await one(`INSERT INTO gradebook_columns (course_id, external_id, name, category_title, points_possible, due_at) VALUES ($1, $2, $3, 'Homework.name', 10, $4) RETURNING id`, [course, external, name, new Date(Date.now() + 5 * DAY).toISOString()]);
     await one(`INSERT INTO student_grades (enrollment_id, course_id, gradebook_column_id) VALUES ($1, $2, $3) RETURNING id`, [enrollment, course, col]);
+    // Con instrucciones: sin ningún material el agente ni siquiera llama a la IA.
+    const item = await one(`INSERT INTO course_content_items (course_id, external_id, handler, title, body_text) VALUES ($1, $2, 'resource/x-bb-asmt-test-link', $3, 'Resuelve los ejercicios del enunciado y entrega el procedimiento completo.') RETURNING id`, [course, `${external}_ci`, name]);
+    await ctx.db.query(`UPDATE gradebook_columns SET content_item_id = $2, content_external_id = $3 WHERE id = $1`, [col, item, `${external}_ci`]);
     return col;
   };
   const waitFor = async <T>(fn: () => Promise<T | undefined>, ms = 3000): Promise<T> => {
@@ -146,6 +149,37 @@ describe('bitácoras, tope mensual duro y reporte (PostgreSQL real)', { skip: !t
     assert.ok(logged.every((l) => l.user_id === ids.alice && l.status === 'ok'));
     assert.equal((await ctx.db.query(`SELECT 1 FROM ai_usage_log WHERE event = 'cap_reached' AND error_code = 'task_budget'`)).rowCount, 1);
     assert.equal(await aiSpend(ctx.db, 'homework'), 0.03);
+  });
+
+  test('agente: si la actividad pide Excel y el modelo intenta terminar sin él, el servidor se lo exige; sin ningún material ni llama a la IA', async () => {
+    await clean();
+    await ctx.db.query(`UPDATE course_content_items SET body_text = 'Resuelve los ejercicios usando Excel con las funciones de distribución.' WHERE external_id = '_c1_ci'`);
+    const bodies: Array<{ input: Array<{ role?: string; content?: string }> }> = [];
+    const usage = { input_tokens: 3000, output_tokens: 500 };
+    const sheet = { nombre_archivo: 'distribuciones', hojas: [{ nombre: 'Datos', celdas: [{ ref: 'A1', valor: 5 }, { ref: 'A2', formula: 'A1*2' }] }] };
+    const responses = [
+      { status: 'completed', output: [{ type: 'function_call', call_id: 'f1', name: 'finalizar', arguments: JSON.stringify({ resumen: 'listo' }) }], usage },
+      { status: 'completed', output: [{ type: 'function_call', call_id: 'x1', name: 'excel', arguments: JSON.stringify(sheet) }, { type: 'function_call', call_id: 'f2', name: 'finalizar', arguments: JSON.stringify({ resumen: 'con Excel' }) }], usage },
+    ];
+    let n = 0;
+    const generator = createHomeworkGenerator({
+      apiKey: 'sk-test', model: 'modelo-falso', priceInPerM: 2, priceOutPerM: 10, maxInputChars: 100_000, maxPerTaskUsd: 1.5, maxTurns: 8, db: ctx.db, store: createFileStore(null), outDir: HOMEWORK_DIR,
+      fetchImpl: (async (_url: unknown, init: { body: string }) => { bodies.push(JSON.parse(init.body)); return new Response(JSON.stringify(responses[n++]), { status: 200, headers: { 'content-type': 'application/json' } }); }) as unknown as typeof fetch,
+    });
+    const run = await one(`INSERT INTO homework_runs (enrollment_id, course_id, gradebook_column_id, trigger) VALUES ($1, $2, $3, 'routine') RETURNING id`, [ids.aMate, ids.mate, ids.colA]);
+    createdRuns.push(run);
+    const result = await generator.generate({ runId: run, enrollmentId: ids.aMate, courseId: ids.mate, gradebookColumnId: ids.colA, budgetUsd: 1 });
+    assert.equal(bodies.length, 2, 'el primer intento de terminar sin Excel se devolvió al modelo');
+    assert.match(JSON.stringify(bodies[0]!.input[0]), /ENTREGABLES QUE EL SERVIDOR EXIGE/);
+    assert.match(JSON.stringify(bodies[1]!.input), /falta lo que la actividad exige/);
+    assert.deepEqual(result.deliverables.map((d) => d.kind), ['xlsx']);
+
+    // Sin instrucciones ni material: no hay llamada a la IA.
+    await ctx.db.query(`UPDATE gradebook_columns SET content_item_id = NULL, content_external_id = NULL WHERE id = $1`, [ids.colA]);
+    bodies.length = 0;
+    await assert.rejects(() => generator.generate({ runId: run, enrollmentId: ids.aMate, courseId: ids.mate, gradebookColumnId: ids.colA, budgetUsd: 1 }), (e: unknown) => e instanceof HomeworkError && e.code === 'no_material');
+    assert.equal(bodies.length, 0);
+    await ctx.db.query(`UPDATE gradebook_columns SET content_item_id = (SELECT id FROM course_content_items WHERE external_id = '_c1_ci'), content_external_id = '_c1_ci' WHERE id = $1`, [ids.colA]);
   });
 
   test('agente: un error de la API también queda registrado, con su código y sin costo', async () => {
