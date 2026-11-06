@@ -12,9 +12,15 @@ import { dispatchPending, handleUpdate, pollOnce, scanEveryone } from './telegra
 import { sendMonthly } from './monthly.js';
 import { sendWeekly } from './weekly.js';
 
-export interface JobsDeps { db: Database; cronSecret: string | null; mailer: Mailer; telegram?: TelegramClient; capUsd: number; webUrl?: string | null }
+export interface JobsDeps {
+  db: Database; cronSecret: string | null; mailer: Mailer; telegram?: TelegramClient; capUsd: number; webUrl?: string | null;
+  /** Ejecuta las rutinas programadas a las que les toca (el programador del servidor); lo usa /jobs/tick. */
+  runDueJobs?: () => Promise<unknown>;
+  /** Ejecuta ahora una rutina por su nombre, fuera de horario; null si no existe. Lo usa /jobs/run. */
+  runJobNow?: (name: string) => Promise<unknown | null>;
+}
 
-export async function jobsRoutes(app: FastifyInstance, { db, cronSecret, mailer, telegram = notConfiguredTelegram, capUsd, webUrl = null }: JobsDeps): Promise<void> {
+export async function jobsRoutes(app: FastifyInstance, { db, cronSecret, mailer, telegram = notConfiguredTelegram, capUsd, webUrl = null, runDueJobs, runJobNow }: JobsDeps): Promise<void> {
   const secretHash = cronSecret ? sha256(cronSecret) : null;
   function authorize(request: FastifyRequest): void {
     if (!secretHash) throw new HttpError(503, 'jobs_not_configured', 'Las rutinas no están configuradas (falta CRON_SECRET).');
@@ -27,6 +33,23 @@ export async function jobsRoutes(app: FastifyInstance, { db, cronSecret, mailer,
       app.route({ method, url: path, schema: { hide: true, ...(querystring ? { querystring } : {}) }, handler: async (request) => { authorize(request); return handler(request); } });
     }
   };
+
+  // El único endpoint que necesita un programador externo (Cloud Scheduler, cada 5 minutos): corre las rutinas a las que les toca según
+  // SCHEDULE_* (cada horario una sola vez, aunque se llame muchas veces) y después recalcula los recordatorios y manda los avisos pendientes
+  // por Telegram. Responde cuando todo terminó: una actualización completa con guías y tareas puede tardar varios minutos.
+  job('/jobs/tick', async () => ({
+    ran: runDueJobs ? await runDueJobs() : [],
+    created: await scanEveryone(db),
+    telegram: await dispatchPending(db, telegram, { webUrl }),
+  }));
+
+  // Disparar una rutina ahora, fuera de horario: /jobs/run?job=actualizar (o correo-semanal, correo-mensual, correo-diario).
+  // Responde cuando terminó, con el resultado; queda en el historial (/jobs/scheduler) como «manual@…».
+  job('/jobs/run', async (request) => {
+    const result = await runJobNow?.((request.query as { job: string }).job);
+    if (!result) throw new HttpError(404, 'job_not_found', 'No existe una rutina con ese nombre (o está apagada con «off»).');
+    return { ran: result, created: await scanEveryone(db), telegram: await dispatchPending(db, telegram, { webUrl }) };
+  }, { type: 'object', additionalProperties: false, required: ['job'], properties: { job: { type: 'string', minLength: 1, maxLength: 40 } } });
 
   // Recordatorios de entrega de todos + avisos pendientes por Telegram (respeta el silencio). Llamar cada 5–10 minutos.
   job('/jobs/notifications', async () => ({ created: await scanEveryone(db), telegram: await dispatchPending(db, telegram, { webUrl }) }));

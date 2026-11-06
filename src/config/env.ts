@@ -42,13 +42,15 @@ export interface AppConfig {
   telegramBotToken: string | null;
   /** Clave de las rutinas por endpoint (/jobs/*): el programador de tareas la manda como «Authorization: Bearer …». Mínimo 32 caracteres. */
   cronSecret: string | null;
-  /** Si es true (por defecto) el servidor atiende a Telegram y recalcula los recordatorios por su cuenta; con false solo se usan los endpoints /jobs/*. */
+  /** Si es true (por defecto) el servidor dispara las rutinas, atiende a Telegram y recalcula los recordatorios por su cuenta; con false todo eso lo dispara un programador externo con /jobs/tick (y Telegram llega por webhook). */
   backgroundJobs: boolean;
   /** Horarios de las rutinas automáticas (hora de El Salvador); ver src/config/schedule.ts. «off» desactiva una rutina. */
   scheduleRefresh: string;
   scheduleWeeklyEmail: string;
   scheduleMonthlyEmail: string;
   scheduleDailyEmail: string;
+  /** Tope (MB) de la copia local de archivos de Blackboard; al pasarlo se borra lo más viejo. Sin valor no hay tope (en Cloud Run el disco es memoria: ponlo). */
+  filesCacheMaxMb: number | null;
   openaiModel: string;
   /** Precios en USD por millón de tokens (para calcular el costo de cada guía y respetar el tope mensual). */
   openaiPriceInPerM: number;
@@ -133,7 +135,14 @@ export function validateDatabaseUrl(name: string, raw: string | undefined, probl
   return value;
 }
 
-function sslMode(nodeEnv: NodeEnv, problems: string[]): DbSslMode {
+/** La conexión es por socket Unix (Cloud Run → Cloud SQL: DB_HOST=/cloudsql/PROYECTO:REGION:INSTANCIA). */
+export function usesSocket(databaseUrl: string | null): boolean {
+  try { return Boolean(databaseUrl && new URL(databaseUrl).searchParams.get('host')?.startsWith('/')); } catch { return false; }
+}
+
+function sslMode(nodeEnv: NodeEnv, socket: boolean, problems: string[]): DbSslMode {
+  // Por socket no hay TLS que negociar: la conexión no sale de la máquina y el conector de Cloud SQL ya cifra y autentica el tramo hasta la base.
+  if (socket) return 'disable';
   const raw = (process.env.DB_SSL_MODE ?? 'verify-full').trim().toLowerCase();
   if (raw !== 'disable' && raw !== 'require' && raw !== 'verify-full') {
     problems.push('DB_SSL_MODE debe ser disable, require o verify-full.');
@@ -163,6 +172,10 @@ function databaseUrlFromParts(dbName: string | undefined, problems: string[], la
   if (!/^\d{1,5}$/.test(port)) {
     problems.push('DB_PORT debe ser numérico.');
     return undefined;
+  }
+  // Socket Unix: el directorio viaja en el parámetro «host» (pg lo prefiere al nombre de host de la URL).
+  if (host!.startsWith('/')) {
+    return `postgresql://${encodeURIComponent(user!)}:${encodeURIComponent(password)}@localhost:${port}/${encodeURIComponent(name!)}?host=${encodeURIComponent(host!)}`;
   }
   const hostPart = host!.includes(':') ? `[${host}]` : host;
   return `postgresql://${encodeURIComponent(user!)}:${encodeURIComponent(password)}@${hostPart}:${port}/${encodeURIComponent(name!)}`;
@@ -221,20 +234,22 @@ export function readConfig(): AppConfig {
     problems.push('FRONTEND_ORIGIN no es una URL válida.');
   }
 
+  const databaseUrl = validateDatabaseUrl('DATABASE_URL',
+    process.env.DATABASE_URL?.trim() || databaseUrlFromParts(process.env.DB_NAME, problems, 'DB_NAME'), problems);
+
   const config: AppConfig = {
     nodeEnv,
     port: int('PORT', 4000, 1, 65535, problems),
     host: (process.env.HOST ?? '127.0.0.1').trim(),
     logLevel: (process.env.LOG_LEVEL ?? 'info').trim(),
-    databaseUrl: validateDatabaseUrl('DATABASE_URL',
-      process.env.DATABASE_URL?.trim() || databaseUrlFromParts(process.env.DB_NAME, problems, 'DB_NAME'), problems),
+    databaseUrl,
     testDatabaseUrl: validateDatabaseUrl('TEST_DATABASE_URL',
       process.env.TEST_DATABASE_URL?.trim() || (process.env.TEST_DB_NAME?.trim()
         ? databaseUrlFromParts(process.env.TEST_DB_NAME, problems, 'TEST_DB_NAME') : undefined), problems),
     dbSslCaFile: (process.env.DB_SSL_CA_FILE ?? '').trim() || null,
     dbSslServername: (process.env.DB_SSL_SERVERNAME ?? '').trim() || null,
     dbPoolMax: int('DB_POOL_MAX', 10, 1, 100, problems),
-    dbSslMode: sslMode(nodeEnv, problems),
+    dbSslMode: sslMode(nodeEnv, usesSocket(databaseUrl), problems),
     dbSchema,
     frontendOrigin,
     sessionTtlDays: int('SESSION_TTL_DAYS', 30, 1, 90, problems),
@@ -256,6 +271,7 @@ export function readConfig(): AppConfig {
     scheduleWeeklyEmail: (process.env.SCHEDULE_WEEKLY_EMAIL ?? 'dom@20:00').trim(),
     scheduleMonthlyEmail: (process.env.SCHEDULE_MONTHLY_EMAIL ?? '1@08:00').trim(),
     scheduleDailyEmail: (process.env.SCHEDULE_DAILY_EMAIL ?? 'off').trim(),
+    filesCacheMaxMb: int('FILES_CACHE_MAX_MB', 0, 0, 100_000, problems) || null,
     openaiModel: (process.env.OPENAI_MODEL ?? 'gpt-6.1-terra').trim(),
     openaiPriceInPerM: decimal('OPENAI_PRICE_IN_PER_M', 1, 0, 1000, problems),
     openaiPriceOutPerM: decimal('OPENAI_PRICE_OUT_PER_M', 5, 0, 1000, problems),

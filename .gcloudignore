@@ -1,0 +1,17 @@
+# Lo que NO se sube a Google Cloud Build al desplegar con «gcloud run deploy --source .».
+# Los archivos con secretos (.env*) nunca salen de la computadora: el script los manda a Secret Manager por separado.
+.git
+.gitignore
+.gcloudignore
+node_modules/
+dist/
+coverage/
+.state/
+.env
+.env.*
+*.log
+certs/
+artifacts/
+sessions/
+tests/
+docs/

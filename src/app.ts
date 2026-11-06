@@ -49,9 +49,13 @@ export interface BuildAppOptions {
   cronSecret?: string | null;
   /** Dirección pública de la web (para el enlace «Abrir en Academic Hub» de los avisos). */
   webUrl?: string | null;
+  /** Ejecuta las rutinas programadas a las que les toca; lo llama /jobs/tick (un programador externo). */
+  runDueJobs?: () => Promise<unknown>;
+  /** Ejecuta ahora una rutina por su nombre (fuera de horario); lo llama /jobs/run. */
+  runJobNow?: (name: string) => Promise<unknown | null>;
 }
 
-export async function buildApp({ config, db, logger = true, registerInternal, blackboardSessions = null, guideGenerator = notConfiguredGenerator, guidePolicy, forumSuggester = notConfiguredSuggester, forumCapUsd = 10, telegram, mailer = notConfiguredMailer, cronSecret = null, webUrl = null }: BuildAppOptions): Promise<FastifyInstance> {
+export async function buildApp({ config, db, logger = true, registerInternal, blackboardSessions = null, guideGenerator = notConfiguredGenerator, guidePolicy, forumSuggester = notConfiguredSuggester, forumCapUsd = 10, telegram, mailer = notConfiguredMailer, cronSecret = null, webUrl = null, runDueJobs, runJobNow }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger
       ? {
@@ -127,7 +131,7 @@ export async function buildApp({ config, db, logger = true, registerInternal, bl
   });
 
   await app.register(healthRoutes, { db });
-  if (db) await app.register(jobsRoutes, { db, cronSecret, mailer, telegram, capUsd: forumCapUsd, webUrl });
+  if (db) await app.register(jobsRoutes, { db, cronSecret, mailer, telegram, capUsd: forumCapUsd, webUrl, runDueJobs, runJobNow });
   app.get('/openapi.json', { schema: { hide: true } }, async () => app.swagger());
 
   await app.register(async (api) => {

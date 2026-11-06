@@ -4,6 +4,8 @@ import { buildApp } from '../src/app.js';
 import type { Mail, Mailer } from '../src/modules/notifications/mailer.js';
 import type { TelegramClient, TelegramUpdate } from '../src/modules/notifications/telegram.js';
 import { createLinkCode } from '../src/modules/notifications/telegram-service.js';
+import { parseTimes } from '../src/config/schedule.js';
+import { createScheduler } from '../src/modules/scheduler/scheduler.js';
 import { setupTestContext, teardownTestContext, testDatabaseAvailable, type TestContext } from './helpers/test-db.js';
 
 const CRON = 'secreto-de-rutinas-de-prueba-0123456789abcdef';
@@ -99,5 +101,34 @@ describe('rutinas por endpoint y webhook de Telegram (PostgreSQL real)', { skip:
     assert.equal((await call('POST', '/jobs/telegram/webhook', auth, { remove: true })).statusCode, 200);
     assert.equal(webhooks.at(-1), null);
     assert.equal((await call('POST', '/jobs/telegram/webhook', {}, { baseUrl: 'https://api.ejemplo.com' })).statusCode, 401);
+  });
+
+  test('/jobs/tick (programador externo): pide la clave, corre las rutinas que tocan una sola vez y luego los avisos', async () => {
+    let runs = 0;
+    const scheduler = createScheduler({ db: ctx.db, now: () => Date.parse('2026-11-05T06:02:00-06:00'),
+      jobs: [{ name: 'prueba-tick', slots: parseTimes('06:00')!, catchupMs: 3_600_000, async run() { runs += 1; } }] });
+    const app = await buildApp({ config: ctx.config, db: ctx.db, logger: false, telegram: client, mailer, cronSecret: CRON, runDueJobs: () => scheduler.tick(), runJobNow: (name) => scheduler.runNow(name) });
+    assert.equal((await app.inject({ method: 'POST', url: '/jobs/tick' })).statusCode, 401);
+    assert.equal(runs, 0, 'sin clave no corre nada');
+    const first = await app.inject({ method: 'POST', url: '/jobs/tick', headers: auth });
+    assert.equal(first.statusCode, 200);
+    assert.deepEqual(first.json().ran, [{ job: 'prueba-tick', slot: '2026-11-05@06:00', status: 'ok' }]);
+    assert.deepEqual(Object.keys(first.json()).sort(), ['created', 'ran', 'telegram'], 'además recalcula recordatorios y manda los avisos');
+    const again = await app.inject({ method: 'GET', url: '/jobs/tick', headers: auth });
+    assert.deepEqual(again.json().ran, [], 'llamarlo cada 5 minutos no repite el horario');
+    assert.equal(runs, 1);
+    // A pedido, fuera de horario: /jobs/run?job=… la corre de nuevo y la deja en el historial como «manual@…».
+    assert.equal((await app.inject({ method: 'POST', url: '/jobs/run?job=prueba-tick' })).statusCode, 401);
+    const manual = await app.inject({ method: 'POST', url: '/jobs/run?job=prueba-tick', headers: auth });
+    assert.equal(manual.statusCode, 200);
+    assert.equal(manual.json().ran.status, 'ok'); assert.match(manual.json().ran.slot, /^manual@2026-11-05T12:02/);
+    assert.equal(runs, 2);
+    assert.equal((await app.inject({ method: 'POST', url: '/jobs/run?job=no-existe', headers: auth })).statusCode, 404);
+    assert.equal((await app.inject({ method: 'POST', url: '/jobs/run', headers: auth })).statusCode, 400, 'sin nombre de rutina');
+    const history = await app.inject({ method: 'GET', url: '/jobs/scheduler', headers: auth });
+    assert.equal(history.json().runs.filter((run: { job: string }) => run.job === 'prueba-tick').length, 2);
+    await app.close();
+    // Sin programador conectado (p. ej. pruebas) el endpoint igual atiende los avisos.
+    assert.deepEqual((await call('POST', '/jobs/tick', auth)).json().ran, []);
   });
 });

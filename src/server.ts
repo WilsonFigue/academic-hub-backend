@@ -44,6 +44,10 @@ async function main(): Promise<void> {
   const { createTelegramClient, notConfiguredTelegram } = await import('./modules/notifications/telegram.js');
   const telegram = config.telegramBotToken ? createTelegramClient({ token: config.telegramBotToken }) : notConfiguredTelegram;
   const webUrl = ['localhost', '127.0.0.1', '::1'].includes(new URL(config.frontendOrigin).hostname) ? null : config.frontendOrigin;
+  // Programador de rutinas (se arma más abajo, cuando la app ya existe). Con BACKGROUND_JOBS=true revisa solo cada 30 s;
+  // con false lo dispara desde fuera /jobs/tick (Cloud Scheduler).
+  let scheduler: { tick(): Promise<unknown>; runNow(name: string): Promise<unknown | null>; start(): () => void; recover(): void } | null = null;
+  const { trimFileCache } = await import('./modules/files/store.js');
   const app = await buildApp({
     config,
     db,
@@ -51,6 +55,12 @@ async function main(): Promise<void> {
     mailer,
     cronSecret: config.cronSecret,
     webUrl,
+    runDueJobs: async () => {
+      const ran = scheduler ? await scheduler.tick() : [];
+      if (config.filesCacheMaxMb) trimFileCache(config.filesCacheMaxMb * 1024 * 1024);
+      return ran;
+    },
+    runJobNow: async (name) => (scheduler ? scheduler.runNow(name) : null),
     blackboardSessions: sessions,
     guideGenerator,
     guidePolicy,
@@ -94,21 +104,25 @@ async function main(): Promise<void> {
     app.log.info('Avisos por Telegram activos (el servidor atiende al bot y recalcula los recordatorios solo).');
   }
   // Rutinas programadas (actualizar desde Blackboard 3 veces al día, correos semanal y mensual…): usan los mismos /jobs/* con CRON_SECRET, dentro del servidor.
-  if (db && config.backgroundJobs) {
-    if (!config.cronSecret) {
-      app.log.warn('Rutinas programadas apagadas: falta CRON_SECRET en .env.');
-    } else {
-      const { createScheduler } = await import('./modules/scheduler/scheduler.js');
-      const { buildJobs } = await import('./modules/scheduler/jobs.js');
-      const call = async (method: 'GET' | 'POST', path: string) => {
-        const response = await app.inject({ method, url: path, headers: { authorization: `Bearer ${config.cronSecret}` } });
-        let json: Record<string, unknown> = {};
-        try { json = response.json(); } catch { /* sin JSON */ }
-        return { status: response.statusCode, json };
-      };
-      const jobs = buildJobs({ call, db, config });
-      stopScheduler = createScheduler({ db, jobs, log: (message, data) => app.log.info(data ?? {}, message) }).start();
+  if (db && !config.cronSecret) {
+    app.log.warn('Rutinas programadas apagadas: falta CRON_SECRET en .env.');
+  } else if (db) {
+    const { createScheduler } = await import('./modules/scheduler/scheduler.js');
+    const { buildJobs } = await import('./modules/scheduler/jobs.js');
+    const call = async (method: 'GET' | 'POST', path: string) => {
+      const response = await app.inject({ method, url: path, headers: { authorization: `Bearer ${config.cronSecret}` } });
+      let json: Record<string, unknown> = {};
+      try { json = response.json(); } catch { /* sin JSON */ }
+      return { status: response.statusCode, json };
+    };
+    const jobs = buildJobs({ call, db, config });
+    scheduler = createScheduler({ db, jobs, log: (message, data) => app.log.info(data ?? {}, message) });
+    if (config.backgroundJobs) {
+      stopScheduler = scheduler.start();
       app.log.info({ rutinas: jobs.map((job) => job.name) }, 'Rutinas programadas activas.');
+    } else {
+      scheduler.recover();
+      app.log.info({ rutinas: jobs.map((job) => job.name) }, 'Rutinas por endpoint: un programador externo debe llamar a GET /jobs/tick (cada 5 minutos).');
     }
   }
 }

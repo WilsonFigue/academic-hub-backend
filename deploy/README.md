@@ -1,5 +1,8 @@
 # Desplegar Academic Hub en un VPS
 
+> **¿Google Cloud?** La guía para Cloud Run + Cloud Scheduler (sin servidor que administrar) está en [cloud-run/README.md](cloud-run/README.md).
+> Esta página es la alternativa con un VPS propio.
+
 Qué queda armado:
 
 ```

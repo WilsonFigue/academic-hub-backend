@@ -1,6 +1,6 @@
 // Copia local de los archivos de Blackboard: si no existe, se descarga una vez con la sesión del estudiante.
 // La usan el visor de archivos y el armado del material de las guías de estudio.
-import { createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -24,6 +24,24 @@ export function rawFileUrl(file: NonNullable<StoredFileRef['file']>): string {
   const query = new URLSearchParams(search);
   query.delete('render'); query.delete('isInlineRender'); query.set('xythos-download', 'true');
   return `${path}?${query.toString()}`;
+}
+
+/**
+ * Recorta la copia local a un tamaño máximo borrando primero lo más viejo; lo borrado se vuelve a descargar cuando haga falta.
+ * Hace falta donde el disco del servidor es memoria (Cloud Run). Devuelve cuántos archivos borró.
+ */
+export function trimFileCache(maxBytes: number, dir = FILES_DIR): number {
+  let entries: Array<{ path: string; size: number; at: number }>;
+  try {
+    entries = readdirSync(dir).map((name) => { const path = join(dir, name); const stat = statSync(path); return { path, size: stat.size, at: stat.mtimeMs }; });
+  } catch { return 0; }
+  let total = entries.reduce((sum, entry) => sum + entry.size, 0);
+  let removed = 0;
+  for (const entry of entries.sort((a, b) => a.at - b.at)) {
+    if (total <= maxBytes) break;
+    try { unlinkSync(entry.path); total -= entry.size; removed += 1; } catch { /* en uso o ya borrado */ }
+  }
+  return removed;
 }
 
 export function createFileStore(sessions: BlackboardSessions | null) {

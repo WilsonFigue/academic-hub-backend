@@ -2,3 +2,4 @@
 Dockerfile text eol=lf
 *.yml text eol=lf
 Caddyfile text eol=lf
+.gcloudignore text eol=lf

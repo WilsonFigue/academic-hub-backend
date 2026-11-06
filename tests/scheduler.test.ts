@@ -113,6 +113,22 @@ describe('programador y cierre mensual (PostgreSQL real)', { skip: !testDatabase
     assert.equal(failed.error_code, 'blackboard_down'); assert.match(failed.detail.message, /Blackboard no respondió/);
   });
 
+  test('si llega otra revisión mientras una rutina corre, no arranca otra: espera a la que ya está en curso', async () => {
+    let runs = 0; let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const jobs: Job[] = [{ name: 'larga', slots: parseTimes('09:00')!, catchupMs: 3 * HOUR, async run() { runs += 1; await gate; } }];
+    const scheduler = createScheduler({ db: ctx.db, jobs, now: () => sv('2026-10-31T09:01:00') });
+    const first = scheduler.tick(); const second = scheduler.tick();
+    let secondDone = false; void second.then(() => { secondDone = true; });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(secondDone, false, 'la segunda llamada sigue esperando mientras la rutina trabaja');
+    release();
+    assert.deepEqual((await second).map((r) => [r.job, r.status]), [['larga', 'ok']]);
+    assert.deepEqual(await first, await second);
+    assert.equal(runs, 1);
+    assert.equal((await scheduler.tick()).length, 0, 'terminada, la siguiente revisión ya no tiene nada que hacer');
+  });
+
   test('al arrancar, una rutina que quedó «corriendo» por un cierre se marca como interrumpida', async () => {
     await ctx.db.query(`INSERT INTO scheduled_job_runs (job_name, slot_key, status) VALUES ('colgada', '2026-10-30@06:00', 'running')`);
     const stop = createScheduler({ db: ctx.db, jobs: [] }).start(); stop();
@@ -135,7 +151,7 @@ describe('programador y cierre mensual (PostgreSQL real)', { skip: !testDatabase
     const detail = await jobs[0]!.run();
     assert.equal(polls, 3);
     assert.deepEqual(calls, ['POST /jobs/utec/refresh', 'GET /jobs/utec/imports/op1', 'GET /jobs/utec/imports/op1', 'GET /jobs/utec/imports/op1',
-      'POST /jobs/utec/calendar', 'POST /jobs/utec/study-guides', 'POST /jobs/utec/homework', 'POST /jobs/notifications']);
+      'POST /jobs/utec/calendar', 'POST /jobs/utec/study-guides', 'POST /jobs/utec/homework?wait=1', 'POST /jobs/notifications']);
     assert.deepEqual((detail as { steps: Record<string, string> }).steps, { actualizar: 'ok', calendario: 'ok', guias: 'ok', tareas: 'ok', avisos: 'ok' });
   });
 

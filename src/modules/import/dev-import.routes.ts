@@ -69,10 +69,11 @@ export interface DevImportOptions {
 
 export async function devImportRoutes(app: FastifyInstance, { db, operatorToken, mode: routeMode = 'dev', cronSecret = null, passingGradePct = null, credentialsKey = null, scheduledLoginVisible = false, guideGenerator = notConfiguredGenerator, guidePolicy, homeworkGenerator = notConfiguredHomework, homeworkPolicy }: DevImportOptions): Promise<void> {
   /** Tras cada actualización: encola las guías de las materias activadas y las procesa en segundo plano (sin retrasar la actualización). */
+  let guidesInBackground: Promise<unknown> = Promise.resolve();
   const guidesAfterRefresh = async (userId: string) => {
     try {
       await enqueueRoutine(db, guidePolicy, { userId });
-      void processQueue(db, guideGenerator, guidePolicy).catch(() => {});
+      guidesInBackground = processQueue(db, guideGenerator, guidePolicy).catch(() => {});
     } catch { /* las guías nunca detienen una actualización */ }
   };
 
@@ -293,6 +294,8 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
   // Rutina de guías de estudio: encola las actividades pendientes de las materias activadas y procesa la cola si hay IA conectada.
   app.post(at('study-guides/run', 'study-guides'), { logLevel: 'warn', schema: { hide: true } }, async (request) => {
     authorizeOperator(request);
+    // Las guías que arrancaron solas tras la actualización: se esperan para que no quede nada a medias cuando esta petición responda.
+    await guidesInBackground;
     const routine = await enqueueRoutine(db, guidePolicy);
     const queue = await processQueue(db, guideGenerator, guidePolicy);
     return { routine, queue };
@@ -300,12 +303,14 @@ export async function devImportRoutes(app: FastifyInstance, { db, operatorToken,
 
   // Rutina de tareas con IA: encola las actividades pendientes (nunca exámenes) de las materias con la bandera activa y las procesa.
   // Solo la dispara quien llama a este endpoint; nada se programa dentro de la API.
-  app.post(at('homework/run', 'homework'), { logLevel: 'warn', schema: { hide: true } }, async (request, reply) => {
+  app.post<{ Querystring: { wait?: string } }>(at('homework/run', 'homework'), { logLevel: 'warn', schema: { hide: true } }, async (request, reply) => {
     authorizeOperator(request);
     // El mes nuevo empieza de cero solo: antes de trabajar se guarda el reporte de cada mes ya terminado que no lo tenga.
     const capUsd = (homeworkPolicy ?? DEFAULT_HOMEWORK_POLICY).monthlyCapUsd;
     const reports = await ensureMonthlyReports(db, { capUsd }).catch(() => [] as string[]);
     const routine = await enqueueHomework(db, homeworkPolicy);
+    // ?wait=1 (lo usan las rutinas programadas): responde cuando la IA terminó, con el resultado de la cola.
+    if (request.query.wait === '1') return { reports, routine, queue: await processHomework(db, homeworkGenerator, homeworkPolicy) };
     // El trabajo con IA tarda minutos: se responde enseguida y se sigue en segundo plano. Cada llamada y cada resultado quedan en ai_usage_log.
     void processHomework(db, homeworkGenerator, homeworkPolicy).catch((error) => app.log.error({ err: { name: (error as Error)?.name } }, 'homework queue failed'));
     return reply.code(202).send({ reports, routine, processing: homeworkGenerator.configured ? 'started' : 'ai_not_configured' });

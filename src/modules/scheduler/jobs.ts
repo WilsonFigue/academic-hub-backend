@@ -56,7 +56,9 @@ export function buildJobs(options: { call: JobCall; db: Database; config: JobsCo
         await step('actualizar', refresh);
         await step('calendario', () => must('POST', '/jobs/utec/calendar'));
         await step('guias', () => must('POST', '/jobs/utec/study-guides'));
-        await step('tareas', () => must('POST', '/jobs/utec/homework'));
+        // wait=1: se espera a que la IA termine las tareas, para que los avisos de «tarea lista» salgan en esta misma corrida
+        // y nada quede trabajando cuando la petición que disparó la rutina ya respondió.
+        await step('tareas', () => must('POST', '/jobs/utec/homework?wait=1'));
         await step('avisos', () => must('POST', '/jobs/notifications'));
         if (firstError) throw Object.assign(new Error(JSON.stringify(steps)), { code: (firstError as { code?: string }).code ?? 'step_failed' });
         return { steps };
