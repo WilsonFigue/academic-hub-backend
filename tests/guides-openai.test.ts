@@ -91,7 +91,7 @@ describe('generador de OpenAI (PostgreSQL real, sin llamar a la red)', { skip: !
   });
 
   test('parseGuide descarta secciones vacías y limpia el texto', () => {
-    const material = { course: 'M', activity: { name: 'A', dueAt: null, points: null, category: null }, skipped: [], links: [], tools: [], totalChars: 0, docs: [] };
+    const material = { course: 'M', activity: { name: 'A', dueAt: null, points: null, category: null }, skipped: [], links: [], tools: [], format: null, totalChars: 0, docs: [] };
     const guide = parseGuide(JSON.stringify({ summary: ' Hola ', sections: [{ heading: 'A', body: '', bullets: [] }, { heading: 'B', body: ' Texto ', bullets: [' x ', ''] }], sources: [] }), material);
     assert.deepEqual(guide, { summary: 'Hola', sections: [{ heading: 'B', body: 'Texto', bullets: ['x'] }], sources: [] });
   });

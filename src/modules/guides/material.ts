@@ -20,6 +20,48 @@ export interface MaterialDoc {
   truncated: boolean;
 }
 export interface SkippedDoc { title: string; reason: string }
+/** Formato de entrega que exige la actividad (si lo dice): se lee del texto, sin IA. */
+export interface DeliveryFormat { font: string | null; sizePt: number | null; lineSpacing: number | null; pagesMin: number | null; pagesMax: number | null; refsMin: number | null }
+
+const WORD_NUMBERS: Record<string, number> = { una: 1, un: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6 };
+const asNumber = (value: string) => WORD_NUMBERS[value.toLowerCase()] ?? Number(value);
+const FONT_NAMES: Record<string, string> = { arial: 'Arial', 'times new roman': 'Times New Roman', calibri: 'Calibri', verdana: 'Verdana', cambria: 'Cambria', georgia: 'Georgia', tahoma: 'Tahoma', garamond: 'Garamond' };
+
+export function extractFormat(text: string): DeliveryFormat | null {
+  const t = text.replace(/\s+/g, ' ');
+  const fontMatch = /\b(arial|times new roman|calibri|verdana|cambria|georgia|tahoma|garamond)\b(?:\s*(?:,|de|tama[ñn]o)?\s*(\d{1,2})\b)?/i.exec(t);
+  const sizeMatch = fontMatch?.[2] ? null : /(?:tama[ñn]o|letra|fuente)\s*(?:de\s*)?(\d{1,2})\b/i.exec(t);
+  const size = Number(fontMatch?.[2] ?? sizeMatch?.[1] ?? 0);
+  let spacing: number | null = null;
+  const spacingMatch = /interlineado\s*(?:de\s*)?(\d(?:[.,]\d+)?)/i.exec(t);
+  if (spacingMatch) spacing = Number(spacingMatch[1]!.replace(',', '.'));
+  else if (/doble espacio|interlineado doble/i.test(t)) spacing = 2;
+  else if (/espacio y medio/i.test(t)) spacing = 1.5;
+  let pagesMin: number | null = null; let pagesMax: number | null = null;
+  const range = /(\d+)\s*(?:a|-|–|y)\s*(\d+)\s*p[aá]ginas/i.exec(t);
+  const most = /(?:m[aá]ximo|hasta)\s*(?:de\s*)?(\d+)\s*p[aá]ginas/i.exec(t);
+  if (range) { pagesMin = Number(range[1]); pagesMax = Number(range[2]); } else if (most) pagesMax = Number(most[1]);
+  const refs = /(?:al menos|m[ií]nimo(?: de)?|por lo menos)\s*(\d+|una|un|dos|tres|cuatro|cinco|seis)\s*(?:\w+\s*)?referencias/i.exec(t);
+  const format: DeliveryFormat = {
+    font: fontMatch ? FONT_NAMES[fontMatch[1]!.toLowerCase()] ?? null : null,
+    sizePt: size >= 8 && size <= 20 ? size : null,
+    lineSpacing: spacing !== null && spacing >= 1 && spacing <= 3 ? spacing : null,
+    pagesMin, pagesMax,
+    refsMin: refs ? asNumber(refs[1]!) : null,
+  };
+  return Object.values(format).some((value) => value !== null) ? format : null;
+}
+
+function describeFormat(format: DeliveryFormat): string {
+  const parts = [
+    format.font || format.sizePt ? `letra ${[format.font, format.sizePt].filter(Boolean).join(' ')}` : null,
+    format.lineSpacing ? `interlineado ${format.lineSpacing}` : null,
+    format.pagesMin && format.pagesMax ? `de ${format.pagesMin} a ${format.pagesMax} páginas` : format.pagesMax ? `máximo ${format.pagesMax} páginas` : null,
+    format.refsMin ? `al menos ${format.refsMin} referencias bibliográficas` : null,
+  ].filter(Boolean);
+  return parts.join(', ');
+}
+
 /** Enlace de la carpeta de la actividad (video, tutorial…): no se abre, pero su título dice el tema o la herramienta. */
 export interface MaterialLink { title: string; url: string | null }
 export interface Material {
@@ -30,6 +72,8 @@ export interface Material {
   links: MaterialLink[];
   /** Herramientas que la actividad parece pedir (ids de tools.ts), vistas en su nombre, sus instrucciones, sus guías y los títulos de los enlaces. */
   tools: string[];
+  /** Formato de entrega que dice la actividad (letra, interlineado, páginas, referencias), si lo dice. */
+  format: DeliveryFormat | null;
   totalChars: number;
 }
 
@@ -46,6 +90,7 @@ export function describeExtras(material: Material): string {
   if (material.tools.length > 0) {
     lines.push(`Herramientas que parecen necesarias: ${material.tools.map((id) => TOOLS.find((tool) => tool.id === id)?.label ?? id).join(', ')}.`);
   }
+  if (material.format) lines.push(`Formato de entrega exigido: ${describeFormat(material.format)}.`);
   if (!material.docs.some((doc) => doc.role === 'instrucciones')) {
     lines.push('Nota: esta actividad no trae instrucciones propias en Blackboard (puede ser solo el lugar donde se sube lo que se pidió en otro archivo). Toma como instrucciones la guía, los ejercicios o el documento relacionado de abajo; si no hay ninguno, dilo.');
   }
@@ -185,5 +230,5 @@ export async function gatherMaterial(db: Queryable, store: FileStore, request: G
       ORDER BY f.position NULLS LAST, f.title LIMIT 15`, [request.enrollmentId, request.courseId, row.item_parent])).rows;
   // Las herramientas se buscan solo donde hablan de ESTA actividad (no en todas las clases, que mencionan de todo).
   const about = [activity.name, ...docs.filter((doc) => doc.role !== 'material').map((doc) => doc.text), ...links.map((link) => link.title)].join('\n');
-  return { course: row.course, activity, docs, skipped, links, tools: detectTools(about), totalChars: used };
+  return { course: row.course, activity, docs, skipped, links, tools: detectTools(about), format: extractFormat(about), totalChars: used };
 }

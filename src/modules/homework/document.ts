@@ -24,7 +24,19 @@ export interface CoverSpec { titulo: string; subtitulo?: string; unidad?: string
 /** Datos de la portada que solo conoce el servidor (nunca pasan por el modelo). */
 export interface CoverData { institution: string; course: string; term: string | null; section: string | null; student: string; carne: string | null; teacher: string | null; city: string; dateText: string }
 
-export interface DocumentSpec { nombre_archivo: string; titulo: string; portada?: CoverSpec; bloques: Block[] }
+/** Formato que exige la actividad (letra, tamaño en puntos, interlineado). Sin valor, el estándar del servidor. */
+export interface DocFormat { fuente?: string; tamano?: number; interlineado?: number }
+export interface DocumentSpec { nombre_archivo: string; titulo: string; portada?: CoverSpec; formato?: DocFormat; bloques: Block[] }
+
+interface Fmt { font: string; size: number; css: number; word: number }
+const DEFAULT_FMT: Fmt = { font: 'Arial', size: 11, css: 1.45, word: 300 };
+/** La fuente entra en CSS: solo letras, números y espacios. */
+export function resolveFormat(f?: DocFormat): Fmt {
+  const font = typeof f?.fuente === 'string' && /^[\p{L}\p{N} ]{2,40}$/u.test(f.fuente) ? f.fuente : DEFAULT_FMT.font;
+  const size = typeof f?.tamano === 'number' && f.tamano >= 8 && f.tamano <= 20 ? f.tamano : DEFAULT_FMT.size;
+  const line = typeof f?.interlineado === 'number' && f.interlineado >= 1 && f.interlineado <= 3 ? f.interlineado : null;
+  return { font, size, css: line ?? DEFAULT_FMT.css, word: line ? Math.round(line * 240) : DEFAULT_FMT.word };
+}
 
 const ACCENT = '#7a1f45';
 const ACCENT_HEX = '7A1F45';
@@ -38,11 +50,11 @@ const coverRows = (cover: CoverData): Array<[string, string]> => [
 ];
 const courseLabel = (cover: CoverData, spec: CoverSpec) => [cover.course.toUpperCase(), spec.unidad?.toUpperCase()].filter(Boolean).join(' · ');
 
-const CSS = `
+const css = (f: Fmt) => `
   * { box-sizing: border-box; }
-  body { margin: 0; font: 11pt/1.45 Arial, 'Liberation Sans', Helvetica, sans-serif; color: #111; }
+  body { margin: 0; font: ${f.size}pt/${f.css} '${f.font}', 'Liberation Sans', Helvetica, sans-serif; color: #111; }
   h1.doc { margin: 0 0 12pt; font-size: 18pt; line-height: 1.2; }
-  h2 { margin: 16pt 0 6pt; font-size: 13pt; line-height: 1.25; break-after: avoid; }
+  h2 { margin: 16pt 0 6pt; font-size: ${f.size + 2}pt; line-height: 1.25; break-after: avoid; }
   p { margin: 0 0 7pt; }
   ul, ol { margin: 0 0 8pt; padding-left: 22pt; } li { margin-bottom: 3pt; }
   .calc { margin: 6pt 0 8pt 16pt; font-family: 'Cambria Math', Cambria, 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; }
@@ -101,22 +113,22 @@ export function renderParts(spec: DocumentSpec, figures: Map<string, FigureAsset
     <div><table class="info">${coverRows(cover).map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join('')}</table><p class="when">${esc(cover.city)}, ${esc(cover.dateText)}</p></div>
   </section>` : '';
   const hasCover = portada !== '';
-  const page = (inner: string) => `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(spec.titulo)}</title><style>${PAGE_CSS}${CSS}</style></head><body>${inner}</body></html>`;
+  const page = (inner: string) => `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(spec.titulo)}</title><style>${PAGE_CSS}${css(resolveFormat(spec.formato))}</style></head><body>${inner}</body></html>`;
   return { cover: hasCover ? page(portada) : null, body: page(`${hasCover ? '' : `<h1 class="doc">${esc(spec.titulo)}</h1>`}${body}`) };
 }
 
 // ── Word ────────────────────────────────────────────────────────────────────
 const FONT = 'Arial';
-function runs(value: unknown, base: { size?: number; bold?: boolean; font?: string; color?: string; italics?: boolean } = {}): TextRun[] {
+function runs(value: unknown, base: { size?: number; bold?: boolean; font?: string; color?: string; italics?: boolean } = {}, fmt: Fmt = DEFAULT_FMT): TextRun[] {
   const out: TextRun[] = []; const text = String(value ?? '');
   const re = /\*\*(.+?)\*\*|\[COMPLETAR:[^\]]*\]/g; let last = 0; let m: RegExpExecArray | null;
-  const push = (t: string, extra: object = {}) => { if (t) out.push(new TextRun({ text: t, font: base.font ?? FONT, size: base.size ?? 22, bold: base.bold, color: base.color, italics: base.italics, ...extra })); };
+  const push = (t: string, extra: object = {}) => { if (t) out.push(new TextRun({ text: t, font: base.font ?? fmt.font, size: base.size ?? fmt.size * 2, bold: base.bold, color: base.color, italics: base.italics, ...extra })); };
   while ((m = re.exec(text))) { push(text.slice(last, m.index)); if (m[1]) push(m[1], { bold: true }); else push(m[0], { bold: true, highlight: 'yellow' }); last = m.index + m[0].length; }
   push(text.slice(last));
   return out;
 }
-const para = (value: unknown, o: { after?: number; before?: number; align?: (typeof AlignmentType)[keyof typeof AlignmentType]; indent?: number; font?: string; size?: number; bold?: boolean; color?: string; italics?: boolean } = {}) =>
-  new Paragraph({ children: runs(value, { font: o.font, size: o.size, bold: o.bold, color: o.color, italics: o.italics }), spacing: { after: o.after ?? 120, before: o.before ?? 0, line: 300 }, alignment: o.align ?? AlignmentType.LEFT, indent: o.indent ? { left: o.indent } : undefined });
+const para = (value: unknown, o: { after?: number; before?: number; align?: (typeof AlignmentType)[keyof typeof AlignmentType]; indent?: number; font?: string; size?: number; bold?: boolean; color?: string; italics?: boolean } = {}, fmt: Fmt = DEFAULT_FMT) =>
+  new Paragraph({ children: runs(value, { font: o.font, size: o.size, bold: o.bold, color: o.color, italics: o.italics }, fmt), spacing: { after: o.after ?? 120, before: o.before ?? 0, line: fmt.word }, alignment: o.align ?? AlignmentType.LEFT, indent: o.indent ? { left: o.indent } : undefined });
 const none = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' } as const;
 const noBorders = { top: none, bottom: none, left: none, right: none } as const;
 
@@ -142,34 +154,37 @@ function coverChildren(spec: DocumentSpec, cover: CoverData): Array<Paragraph | 
 
 export async function buildDocx(spec: DocumentSpec, figures: Map<string, FigureAsset>, cover: CoverData | null): Promise<Buffer> {
   const hasCover = Boolean(cover && spec.portada);
+  const fmt = resolveFormat(spec.formato);
+  const R = (value: unknown, base: Parameters<typeof runs>[1] = {}) => runs(value, base, fmt);
+  const P = (value: unknown, o: Parameters<typeof para>[1] = {}) => para(value, o, fmt);
   const children: Array<Paragraph | Table> = [];
-  if (!hasCover) children.push(para(spec.titulo, { size: 36, bold: true, after: 200 }));
+  if (!hasCover) children.push(P(spec.titulo, { size: 36, bold: true, after: 200 }));
   let figureNumber = 0;
   for (const block of spec.bloques) {
     switch (block.tipo) {
-      case 'seccion': children.push(new Paragraph({ keepNext: true, spacing: { before: 280, after: 100 }, children: [new TextRun({ text: block.titulo, font: FONT, size: 26, bold: true })] })); break;
-      case 'parrafo': children.push(para(block.texto)); break;
-      case 'lista': block.items.forEach((item, i) => children.push(new Paragraph({ children: runs(block.numerada ? `${i + 1}. ${item}` : item), bullet: block.numerada ? undefined : { level: 0 }, indent: block.numerada ? { left: 360 } : undefined, spacing: { after: 60, line: 300 } }))); break;
-      case 'formulas': block.lineas.forEach((l) => children.push(new Paragraph({ children: runs(l, { font: 'Cambria Math', size: 24 }), spacing: { after: 40 }, indent: { left: 360 } }))); break;
-      case 'resultado': children.push(new Paragraph({ children: runs(block.texto, { bold: true }), spacing: { before: 120, after: 160 }, border: { top: { style: 'single', size: 8, color: '111111', space: 4 }, bottom: { style: 'single', size: 8, color: '111111', space: 4 }, left: { style: 'single', size: 8, color: '111111', space: 4 }, right: { style: 'single', size: 8, color: '111111', space: 4 } } })); break;
-      case 'referencias': block.items.slice(0, 60).forEach((item) => children.push(new Paragraph({ children: runs(item), spacing: { after: 100, line: 300 }, indent: { left: 560, hanging: 560 } }))); break;
-      case 'codigo': block.texto.split('\n').slice(0, 400).forEach((l) => children.push(new Paragraph({ children: runs(l || ' ', { font: 'Consolas', size: 19 }), spacing: { after: 0 }, shading: { type: ShadingType.CLEAR, fill: 'F2F2F2' } }))); children.push(para(' ', { after: 80 })); break;
+      case 'seccion': children.push(new Paragraph({ keepNext: true, spacing: { before: 280, after: 100 }, children: [new TextRun({ text: block.titulo, font: fmt.font, size: (fmt.size + 2) * 2, bold: true })] })); break;
+      case 'parrafo': children.push(P(block.texto)); break;
+      case 'lista': block.items.forEach((item, i) => children.push(new Paragraph({ children: R(block.numerada ? `${i + 1}. ${item}` : item), bullet: block.numerada ? undefined : { level: 0 }, indent: block.numerada ? { left: 360 } : undefined, spacing: { after: 60, line: fmt.word } }))); break;
+      case 'formulas': block.lineas.forEach((l) => children.push(new Paragraph({ children: R(l, { font: 'Cambria Math', size: 24 }), spacing: { after: 40 }, indent: { left: 360 } }))); break;
+      case 'resultado': children.push(new Paragraph({ children: R(block.texto, { bold: true }), spacing: { before: 120, after: 160 }, border: { top: { style: 'single', size: 8, color: '111111', space: 4 }, bottom: { style: 'single', size: 8, color: '111111', space: 4 }, left: { style: 'single', size: 8, color: '111111', space: 4 }, right: { style: 'single', size: 8, color: '111111', space: 4 } } })); break;
+      case 'referencias': block.items.slice(0, 60).forEach((item) => children.push(new Paragraph({ children: R(item), spacing: { after: 100, line: fmt.word }, indent: { left: 560, hanging: 560 } }))); break;
+      case 'codigo': block.texto.split('\n').slice(0, 400).forEach((l) => children.push(new Paragraph({ children: R(l || ' ', { font: 'Consolas', size: 19 }), spacing: { after: 0 }, shading: { type: ShadingType.CLEAR, fill: 'F2F2F2' } }))); children.push(P(' ', { after: 80 })); break;
       case 'tabla': {
         const cols = Math.max(block.encabezados.length, 1);
-        const cell = (t: string, head = false) => new TableCell({ width: { size: Math.floor(100 / cols), type: WidthType.PERCENTAGE }, shading: head ? { type: ShadingType.CLEAR, fill: 'ECECEC' } : undefined, children: [new Paragraph({ children: runs(t, { size: 21, bold: head }), alignment: AlignmentType.CENTER, spacing: { after: 40 } })] });
+        const cell = (t: string, head = false) => new TableCell({ width: { size: Math.floor(100 / cols), type: WidthType.PERCENTAGE }, shading: head ? { type: ShadingType.CLEAR, fill: 'ECECEC' } : undefined, children: [new Paragraph({ children: R(t, { size: 21, bold: head }), alignment: AlignmentType.CENTER, spacing: { after: 40 } })] });
         children.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [new TableRow({ tableHeader: true, children: block.encabezados.map((h) => cell(h, true)) }), ...block.filas.slice(0, 300).map((r) => new TableRow({ children: Array.from({ length: cols }, (_, i) => cell(r[i] ?? '')) }))] }));
-        children.push(block.pie ? para(block.pie, { before: 60, after: 160, align: AlignmentType.CENTER, size: 19, italics: true }) : para(' ', { after: 80 }));
+        children.push(block.pie ? P(block.pie, { before: 60, after: 160, align: AlignmentType.CENTER, size: 19, italics: true }) : P(' ', { after: 80 }));
         break;
       }
       case 'figura': {
         const asset = figures.get(block.id);
-        if (!asset) { children.push(para(`[COMPLETAR: figura «${block.id}»]`)); break; }
+        if (!asset) { children.push(P(`[COMPLETAR: figura «${block.id}»]`)); break; }
         figureNumber += 1;
         const width = 470; let data: Buffer; let ratio: number;
         if ('png' in asset) { data = asset.png; ratio = asset.height / asset.width; }
         else { const vb = /viewBox="0 0 ([\d.]+) ([\d.]+)"/.exec(asset.svg); ratio = vb ? Number(vb[2]) / Number(vb[1]) : 0.8; data = await svgToPng(asset.svg, 1000); }
         children.push(new Paragraph({ alignment: AlignmentType.CENTER, keepNext: Boolean(block.pie), children: [new ImageRun({ type: 'png', data, transformation: { width, height: Math.round(width * ratio) } })], spacing: { before: 80, after: 40 } }));
-        if (block.pie) children.push(para(`Figura ${figureNumber}. ${block.pie}`, { after: 160, align: AlignmentType.CENTER, size: 19, italics: true }));
+        if (block.pie) children.push(P(`Figura ${figureNumber}. ${block.pie}`, { after: 160, align: AlignmentType.CENTER, size: 19, italics: true }));
         break;
       }
       default: break;

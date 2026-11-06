@@ -3,6 +3,7 @@
 // Reglas completas: docs/HOMEWORK_AGENT_RULES.md. El costo se calcula con los tokens reales y se guarda también si el intento falla.
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { PDFDocument } from 'pdf-lib';
 import type { Queryable } from '../../database/connection.js';
 import { describeExtras, explainNoMaterial, gatherMaterial, type FileStore } from '../guides/material.js';
 import { logAiUsage } from '../logs/logs.js';
@@ -50,7 +51,9 @@ REGLAS
    f) GeoGebra: la imagen va DENTRO del documento. Pon entregar_archivo=true (para entregar también el .ggb) solo si la actividad pide entregar el archivo de GeoGebra.
 13. Bibliografía y citas (por ejemplo en IEEE): usa SIEMPRE el bloque «referencias», con una referencia por elemento y con el formato que pida la actividad (IEEE: [1] A. Apellido, «Título», editorial, ciudad, año). Cita solo FUENTES REALES: los libros o textos que el propio enunciado nombra (autores, título, enlace) con los datos que el enunciado da, y obras muy conocidas de las que estés seguro. Si falta un dato de una fuente que sí existe (editorial, año), deja un único [COMPLETAR: editorial y año] en esa referencia. NO cites como fuente archivos de clase, presentaciones, hojas de práctica ni bases de datos de ejemplo, y NUNCA inventes páginas, citas textuales ni obras. Atribuye a una fuente solo afirmaciones generales y conocidas. Las citas numeradas siguen el orden de aparición.
 14. Si una pregunta admite dos lecturas, usa como respuesta principal la que respeta TODAS las condiciones del enunciado (por ejemplo, si dice «dos personas para regalarles una película de drama», la condición «drama» acota a quién se aplica) y menciona la otra lectura solo con una nota de una línea. Los supuestos van en «finalizar».
-15. Termina SIEMPRE llamando a «finalizar» con un resumen breve, los supuestos que hiciste y lo que quedó pendiente de completar por el estudiante.`;
+15. Termina SIEMPRE llamando a «finalizar» con un resumen breve, los supuestos que hiciste y lo que quedó pendiente de completar por el estudiante.
+16. VOZ DE ESTUDIANTE. Cuando la actividad pida «con tus propias palabras», una reflexión, una opinión o un análisis personal, o diga que el análisis, los ejemplos o las reflexiones los elabora el estudiante, escribe esas partes en primera persona y con el vocabulario natural de un estudiante universitario salvadoreño: palabras comunes, frases de largo normal, ideas directas y ejemplos concretos y reconocibles del país. Evita el tono de manual o de ensayo pulido, las listas de adjetivos grandilocuentes, las muletillas de IA y los párrafos todos del mismo molde. No inventes vivencias personales específicas (nombres, lugares, anécdotas): apoya la reflexión en razonamientos y situaciones generales o conocidas; si hace falta una anécdota propia, deja UN solo [COMPLETAR: anécdota personal]. En «pendientes» di qué partes debe revisar y ajustar el estudiante con su propia experiencia, porque la actividad lo exige.
+17. FORMATO Y EXTENSIÓN. Respeta lo que diga la actividad: «Formato de entrega exigido» (el servidor aplica letra, tamaño e interlineado; tú cuida las páginas y las referencias), las extensiones por apartado (por ejemplo «unas 10 líneas», «un párrafo de 8 a 10 líneas») y el orden y los nombres de los apartados. Si te piden elegir una situación o un tema, elige UNO concreto y reconocible, anúncialo una sola vez y no inventes cifras, fechas ni citas.`;
 
 const fn = (name: string, description: string, properties: Record<string, unknown>, required: string[]) =>
   ({ type: 'function', function: { name, description, parameters: { type: 'object', properties, required } } });
@@ -79,6 +82,7 @@ export const TOOLS = [
         negrita: { type: 'boolean' }, estilo: { type: 'string', enum: ['encabezado', 'dato', 'resultado', 'nota', 'titulo'] }, combinar: { ...str, description: 'Rango a combinar, ej. A1:D1' } } } } } } } }, ['nombre_archivo', 'hojas']),
   fn('documento', 'Arma el documento en PDF y en Word a la vez (los dos con el mismo contenido; llámala UNA sola vez por documento). Presentación sobria de trabajo universitario. Con «portada» el servidor arma una portada completa. Tipos de bloque: seccion{titulo}, parrafo{texto}, lista{items,numerada?}, formulas{lineas}, tabla{encabezados,filas,pie?}, figura{id,pie?} (usa un id creado con «grafica»), resultado{texto} (recuadro destacado), codigo{texto}, referencias{items} (bibliografía: UNA referencia por elemento, ya numerada como [1], [2]…). Llámala una vez por cada documento que deba entregarse.', {
     nombre_archivo: str, titulo: { ...str, description: 'Título del documento (si no hay portada, va arriba de la primera página).' },
+    formato: { type: 'object', description: 'Solo si la actividad pide un formato (el servidor ya lo aplica si lo detectó): fuente (p. ej. "Arial"), tamano en puntos e interlineado (p. ej. 1.5).', properties: { fuente: str, tamano: num, interlineado: num } },
     portada: { type: 'object', description: 'Solo si el enunciado pide portada. El servidor completa universidad, materia, estudiante, carné, sección, ciclo, ciudad y fecha: NO los escribas tú.', properties: { titulo: { ...str, description: 'Título del trabajo tal como va en la portada.' }, subtitulo: { ...str, description: 'Opcional.' }, unidad: { ...str, description: 'Opcional, por ejemplo "Unidad IV: Geometría analítica".' } }, required: ['titulo'] },
     bloques: { type: 'array', items: { type: 'object', required: ['tipo'], properties: {
       tipo: { type: 'string', enum: ['seccion', 'parrafo', 'lista', 'formulas', 'tabla', 'figura', 'resultado', 'codigo', 'referencias'] },
@@ -97,6 +101,9 @@ function coverFor(row: { course: string; carne: string | null; institution: stri
     city: 'San Salvador', dateText: new Date().toLocaleDateString('es-SV', { month: 'long', year: 'numeric', timeZone: 'America/El_Salvador' }),
   };
 }
+
+/** Lo que se sabe del último documento armado, para comprobar el formato que exige la actividad. */
+interface DocState { pages: number | null; refs: number }
 
 const safeName = (raw: unknown, ext: string, taken: Set<string>) => {
   let base = basename(String(raw ?? 'tarea')).replace(/\.(pdf|docx|xlsx|ggb)$/i, '').replace(/[^\p{L}\p{N} _().-]+/gu, '_').trim().slice(0, 80) || 'tarea';
@@ -129,7 +136,10 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
 
   /** Lo que la actividad exige según las herramientas detectadas en sus instrucciones, guías y enlaces: el servidor lo comprueba antes de dejar terminar. */
   function requirementsFor(material: Awaited<ReturnType<typeof context>>['material']) {
-    const out: Array<{ text: string; met: (deliverables: Deliverable[], tools: Record<string, number>) => boolean }> = [];
+    const out: Array<{ text: string; met: (deliverables: Deliverable[], tools: Record<string, number>, doc: DocState) => boolean }> = [];
+    const format = material.format;
+    if (format?.pagesMax) out.push({ text: `un documento de ${format.pagesMin ? `${format.pagesMin} a ${format.pagesMax}` : `máximo ${format.pagesMax}`} páginas (la herramienta «documento» te dice cuántas salieron; ajusta el texto hasta que quepa)`, met: (_d, _t, doc) => doc.pages !== null && doc.pages <= format.pagesMax! && doc.pages >= (format.pagesMin ?? 1) });
+    if (format?.refsMin) out.push({ text: `al menos ${format.refsMin} referencias bibliográficas reales en un bloque «referencias»`, met: (_d, _t, doc) => doc.refs >= format.refsMin! });
     if (material.tools.includes('excel')) out.push({ text: 'un libro Excel (.xlsx) con fórmulas reales, hecho con la herramienta «excel» (la actividad o sus enlaces piden Excel)', met: (d) => d.some((file) => file.kind === 'xlsx') });
     if (material.tools.includes('geogebra')) out.push({ text: 'la construcción con la herramienta «geogebra» (la actividad pide GeoGebra)', met: (_d, tools) => (tools.geogebra ?? 0) > 0 });
     return out;
@@ -244,12 +254,19 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
               }
               const pdfName = safeName(spec.nombre_archivo, 'pdf', names);
               const docxName = pdfName.replace(/\.pdf$/i, '.docx'); names.add(docxName.toLowerCase());
+              // El formato que dice la actividad manda sobre lo que el modelo ponga: letra, tamaño e interlineado.
+              const wanted = ctx.material.format;
+              if (wanted && (wanted.font || wanted.sizePt || wanted.lineSpacing)) {
+                spec.formato = { fuente: wanted.font ?? spec.formato?.fuente, tamano: wanted.sizePt ?? spec.formato?.tamano, interlineado: wanted.lineSpacing ?? spec.formato?.interlineado };
+              }
               const files = await buildDocumentFiles(spec, figures, cover);
+              docState.pages = (await PDFDocument.load(files.pdf)).getPageCount() - (spec.portada ? 1 : 0);
+              docState.refs = spec.bloques.reduce((sum, b) => sum + (b.tipo === 'referencias' && Array.isArray(b.items) ? b.items.length : 0), 0);
               writeFileSync(join(dir, pdfName), files.pdf, { mode: 0o600 }); writeFileSync(join(dir, docxName), files.docx, { mode: 0o600 });
               deliverables.push({ name: pdfName, kind: 'pdf', bytes: files.pdf.length }, { name: docxName, kind: 'docx', bytes: files.docx.length });
               report.placeholders.push(...placeholdersIn(args));
               documentsByName.set(baseKey, [pdfName, docxName]);
-              return { ok: true, archivos: [pdfName, docxName], nota: 'Documento listo en PDF y Word. NO lo repitas: si de verdad debes corregirlo, vuelve a llamar con EL MISMO nombre_archivo y reemplaza al anterior.' };
+              return { ok: true, archivos: [pdfName, docxName], paginas_del_contenido: docState.pages, referencias: docState.refs, nota: 'Documento listo en PDF y Word. NO lo repitas: si de verdad debes corregirlo, vuelve a llamar con EL MISMO nombre_archivo y reemplaza al anterior.' };
             } catch (error) { return { error: (error as Error).message }; }
           }
           case 'finalizar': {
@@ -269,9 +286,10 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
       const budget = Math.min(request.budgetUsd ?? options.maxPerTaskUsd, options.maxPerTaskUsd);
       const priceIn = options.priceInPerM / 1_000_000, priceOut = options.priceOutPerM / 1_000_000;
       const base = { feature: 'homework' as const, runId: request.runId, enrollmentId: request.enrollmentId, courseId: request.courseId, gradebookColumnId: request.gradebookColumnId, model: options.model };
-      let nudged = false; let requirementNudged = false; let stoppedByCost = false;
+      let nudged = false; let requirementNudges = 0; let stoppedByCost = false;
       /** Si falta un entregable exigido, se le devuelve al modelo (una sola vez) en lugar de dejarlo terminar. */
-      const missingRequired = () => required.filter((r) => !r.met(deliverables, report.tools)).map((r) => r.text); let lastIn = 0, lastOut = 0, pendingChars = 0;
+      const docState: DocState = { pages: null, refs: 0 };
+      const missingRequired = () => required.filter((r) => !r.met(deliverables, report.tools, docState)).map((r) => r.text); let lastIn = 0, lastOut = 0, pendingChars = 0;
       for (let turn = 1; turn <= options.maxTurns; turn += 1) {
         report.turns = turn;
         // Antes de cada llamada se estima lo que costará la entrada y se limita la salida (que incluye el razonamiento) para no pasar del presupuesto.
@@ -318,8 +336,8 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
         if (calls.length === 0) {
           if (body.status === 'incomplete' && deliverables.length === 0) throw new HomeworkError('output_truncated', usage());
           const lacking = missingRequired();
-          if (lacking.length > 0 && !requirementNudged && turn < options.maxTurns) {
-            requirementNudged = true;
+          if (lacking.length > 0 && requirementNudges < 2 && turn < options.maxTurns) {
+            requirementNudges += 1;
             const demand = `Falta algo que la actividad exige: ${lacking.join('; ')}. Prodúcelo ahora con las herramientas y vuelve a llamar a «finalizar».`;
             input.push({ role: 'user', content: demand }); pendingChars += demand.length;
             continue;
@@ -339,8 +357,8 @@ export function createHomeworkGenerator(options: AgentOptions): HomeworkGenerato
         }
         if (finished) {
           const lacking = missingRequired();
-          if (lacking.length > 0 && !requirementNudged && turn < options.maxTurns) {
-            requirementNudged = true; finished = false;
+          if (lacking.length > 0 && requirementNudges < 2 && turn < options.maxTurns) {
+            requirementNudges += 1; finished = false;
             const demand = `No puedes terminar todavía: falta lo que la actividad exige: ${lacking.join('; ')}. Prodúcelo ahora y vuelve a llamar a «finalizar».`;
             input.push({ role: 'user', content: demand }); pendingChars += demand.length;
             continue;
